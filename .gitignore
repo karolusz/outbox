@@ -1,0 +1,32 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+coverage.html
+coverage.txt
+
+# Vendor
+/vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Local env
+.env
+.env.local
+*.local
+
+# Private planning docs (research, design, IMPL/ADR notes) — kept local only,
+# not pushed to remote. The README links to public-facing material; anything
+# strategy-ish lives under docs/ and is git-ignored by intent.
+/docs/
