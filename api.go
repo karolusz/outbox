@@ -2,38 +2,66 @@
 // persisted in the same transaction as the domain write that produces them,
 // and a separate relay process publishes them at-least-once to a broker.
 //
-// This file holds the producer-side API. The caller passes a transaction
-// (or DB) plus a Message and the row is INSERTed into the outbox table.
+// This file holds the producer-side API. Adopters call Send (or SendBatch)
+// inside their own transaction; the lib INSERTs a row that the relay will
+// later pick up and publish.
 package outbox
 
-import "database/sql"
+import "context"
 
-// NamedExecer accepts both *sqlx.Tx and *sqlx.DB. The caller decides which
-// one to pass — the outbox does not own the transaction lifecycle.
-type NamedExecer interface {
-	NamedExec(query string, arg any) (sql.Result, error)
+// TxWriter is the adapter the lib writes the outbox row through.
+//
+// Adopters do not implement this interface unless they are using a driver
+// the lib does not ship a sub-package for. For sqlx, pgx, etc., import the
+// matching sub-package (outbox/outboxsqlx, ...) and pass the native tx
+// type directly — the sub-package owns the adapter internally.
+//
+// The single method signature matches database/sql's ExecContext, minus the
+// unused result. The name "TxWriter" reflects the intended usage pattern:
+// adopters should pass their transaction handle so the outbox row is
+// inserted in the same tx as the domain write that produced it. Any type
+// with an ExecContext method (including *sql.DB) structurally satisfies
+// the interface, but passing a non-transactional handle defeats the point
+// of the outbox.
+type TxWriter interface {
+	ExecContext(ctx context.Context, query string, args ...any) error
 }
 
-// SendMessage saves a new outbox event in the database within the provided
-// transaction handle. The caller is responsible for committing or rolling
-// back the transaction.
-func SendMessage(ex NamedExecer, msg Message) error {
-	_, err := ex.NamedExec(queryInsert, msg)
-	return err
+// Send saves a single Message inside the caller's transaction. The caller
+// is responsible for committing or rolling back the transaction.
+func Send(ctx context.Context, tx TxWriter, msg Message) error {
+	return tx.ExecContext(ctx, insertSQL, insertArgs(msg)...)
 }
 
-// SendMessageMany saves a slice of outbox events in a single statement.
-func SendMessageMany(ex NamedExecer, msgs []*Message) error {
-	if len(msgs) == 0 {
-		return nil
+// SendBatch saves multiple Messages inside the caller's transaction, in
+// order. Returns immediately on the first error; the caller's tx rollback
+// handles cleanup of any partial writes.
+func SendBatch(ctx context.Context, tx TxWriter, msgs []Message) error {
+	for _, m := range msgs {
+		if err := Send(ctx, tx, m); err != nil {
+			return err
+		}
 	}
-	_, err := ex.NamedExec(queryInsert, msgs)
-	return err
+	return nil
 }
 
-// queryInsert is consumed by sqlx.NamedExec — :name placeholders are bound
-// to the matching `db:"name"` tags on the Message struct.
-var queryInsert = `
+// insertSQL is the producer-side INSERT, with positional placeholders so
+// every Postgres driver (database/sql, sqlx, pgx) can execute it directly.
+// retry_count is always 0 on insert; the relay manages it from there.
+const insertSQL = `
 	INSERT INTO outbox_events (data, attributes, topic, created_at, retry_count, retry_limit, ordering_key, event_type)
-	VALUES (:data, :attributes, :topic, NOW(), 0, :retry_limit, :ordering_key, :event_type)
+	VALUES ($1, $2, $3, NOW(), 0, $4, $5, $6)
 `
+
+// insertArgs returns the positional args matching insertSQL for a single
+// Message. Order matches the column list in insertSQL exactly.
+func insertArgs(msg Message) []any {
+	return []any{
+		msg.Data,
+		msg.Attributes,
+		msg.Destination,
+		msg.RetryLimit,
+		msg.OrderingKey,
+		msg.EventType,
+	}
+}
