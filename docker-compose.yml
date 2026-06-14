@@ -1,0 +1,39 @@
+# Local test database for the outbox library.
+#
+# The official postgres image automatically executes any .sql files mounted
+# at /docker-entrypoint-initdb.d/ on first initialization, so our migration
+# is applied without a separate migration runner. This is sufficient while
+# we have a single migration; once we ship the migration package (and
+# evolve the schema), we will switch to running migrations through the
+# library's own tooling.
+#
+# Port 5434 (instead of 5432) so this does not collide with a default
+# Postgres or with other compose stacks already running on the host.
+services:
+  postgres:
+    image: postgres:18-alpine
+    command: postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off
+    environment:
+      POSTGRES_USER: outbox
+      POSTGRES_PASSWORD: outbox
+      POSTGRES_DB: outbox
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      # Postgres 18+ wants the mount at /var/lib/postgresql (parent), not the
+      # /var/lib/postgresql/data subdirectory — see https://github.com/docker-library/postgres/pull/1259
+      - pgdata:/var/lib/postgresql
+      # Migrations dir is mounted read-only; the init script below applies the
+      # *.up.sql files in order. We do NOT mount migrations/ directly into
+      # /docker-entrypoint-initdb.d/ because postgres would also run the
+      # *.down.sql files and undo the schema.
+      - ./migrations:/migrations:ro
+      - ./docker/init.sh:/docker-entrypoint-initdb.d/01_init.sh:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "outbox", "-d", "outbox"]
+      interval: 1s
+      timeout: 1s
+      retries: 10
+
+volumes:
+  pgdata:

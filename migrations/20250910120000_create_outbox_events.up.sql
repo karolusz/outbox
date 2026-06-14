@@ -1,4 +1,3 @@
--- +goose Up
 CREATE TABLE outbox_events (
     id BIGSERIAL PRIMARY KEY,
     data BYTEA NOT NULL,
@@ -12,12 +11,9 @@ CREATE TABLE outbox_events (
     last_attempted_at TIMESTAMPTZ DEFAULT NULL,
     -- Producer-side dedup against transactional retries: identical (topic,
     -- event_type, ordering_key) triples collapse to a single row. Useful for
-    -- DDE-style emission patterns where each (aggregate, state-transition)
-    -- pair maps to exactly one event. Services that legitimately emit
-    -- multiple events with the same key can drop this constraint via a
-    -- service-local migration.
+    -- emission patterns where each (aggregate, state-transition) pair maps
+    -- to exactly one event. Services that legitimately emit multiple events
+    -- with the same key can drop this constraint via a service-local
+    -- migration.
     CONSTRAINT uq_outbox_topic_event_ordering UNIQUE (topic, event_type, ordering_key)
 );
-
--- +goose Down
-DROP TABLE IF EXISTS outbox_events;
