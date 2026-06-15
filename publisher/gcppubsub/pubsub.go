@@ -1,8 +1,10 @@
 // Package gcppubsub adapts cloud.google.com/go/pubsub as an outbox Publisher.
 //
-// One Publisher holds one GCP Pub/Sub client and resolves the
-// outbox.Message.Destination as the topic name. Ordering is honoured via
-// the Pub/Sub OrderingKey when the topic has EnableMessageOrdering set.
+// One Publisher holds one GCP Pub/Sub client. The relay resolves a row's
+// logical address to a Pub/Sub topic name via the address book and hands
+// the target topic name to Publish as a separate argument. The Publisher
+// uses that target as the topic. Ordering keys are honoured via the
+// Pub/Sub OrderingKey when the topic has EnableMessageOrdering set.
 package gcppubsub
 
 import (
@@ -14,9 +16,8 @@ import (
 	"github.com/karolusz/outbox"
 )
 
-// Publisher publishes outbox Messages to GCP Pub/Sub topics.
-//
-// It satisfies the outbox.Publisher interface (`Publish(ctx, *Message) error`).
+// Publisher publishes outbox Messages to GCP Pub/Sub topics. Satisfies
+// outbox.Publisher.
 type Publisher struct {
 	client *pubsub.Client
 }
@@ -39,16 +40,15 @@ func NewWithClient(client *pubsub.Client) *Publisher {
 	return &Publisher{client: client}
 }
 
-// Publish sends msg to the Pub/Sub topic named in msg.Destination and blocks
-// until the broker acks (or returns an error). The full broker error is
-// returned to the relay verbatim — there is no error-classification logic
-// in v0.
-func (p *Publisher) Publish(ctx context.Context, msg *outbox.Message) error {
-	if msg.Destination == "" {
-		return fmt.Errorf("pubsub: empty destination on message id=%d", msg.ID)
+// Publish sends msg to the Pub/Sub topic named in target and blocks until
+// the broker acks (or returns an error). The full broker error is returned
+// to the relay verbatim — there is no error-classification logic in v0.
+func (p *Publisher) Publish(ctx context.Context, target string, msg *outbox.Message) error {
+	if target == "" {
+		return fmt.Errorf("pubsub: empty target for message id=%d (address=%q)", msg.ID, msg.Address)
 	}
 
-	topic := p.client.Topic(msg.Destination)
+	topic := p.client.Topic(target)
 	result := topic.Publish(ctx, &pubsub.Message{
 		Data:        msg.Data,
 		Attributes:  msg.Attributes,
@@ -59,7 +59,8 @@ func (p *Publisher) Publish(ctx context.Context, msg *outbox.Message) error {
 }
 
 // Close releases the underlying Pub/Sub client. Idempotent across multiple
-// calls; safe to defer.
-func (p *Publisher) Close() error {
+// calls; safe to defer. The ctx argument is accepted for interface
+// compatibility; the GCP client's Close does not consult it.
+func (p *Publisher) Close(ctx context.Context) error {
 	return p.client.Close()
 }

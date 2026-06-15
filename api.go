@@ -59,7 +59,7 @@ func insertArgs(msg Message) []any {
 	return []any{
 		msg.Data,
 		msg.Attributes,
-		msg.Destination,
+		msg.Address,
 		msg.RetryLimit,
 		msg.OrderingKey,
 		msg.EventType,

@@ -12,14 +12,16 @@ import (
 // deliver the event to its destination, plus the bookkeeping the relay uses
 // to track delivery attempts.
 //
-// Destination is an opaque string interpreted by the configured Publisher
-// (e.g. a Pub/Sub topic, a Kafka topic, an SQS queue name). The outbox
-// itself does not know what it means.
+// Address is the producer-visible logical name (e.g. "payments.completed.v1").
+// In v0.2+, the address book resolves it to a (publisher, target) pair at
+// publish time. In v0.1 setups without an address book, the address is
+// passed through as the broker target verbatim. The db column remains
+// "topic" via struct tag for backwards compatibility with the v0.1 schema.
 type Message struct {
 	ID              int64      `db:"id"`
 	Data            []byte     `db:"data"`
 	Attributes      JSONBMap   `db:"attributes"`
-	Destination     string     `db:"topic"` // db column kept as "topic" for now; field is broker-neutral
+	Address         string     `db:"topic"` // logical address; db column kept as "topic"
 	OrderingKey     string     `db:"ordering_key"`
 	EventType       string     `db:"event_type"`
 	RetryCount      int        `db:"retry_count"`

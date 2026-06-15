@@ -37,7 +37,7 @@ func TestSend_InsertsRow(t *testing.T) {
 	msg := outbox.Message{
 		Data:        []byte("hello via outboxsqlx"),
 		Attributes:  outbox.JSONBMap{"k": "v"},
-		Destination: "sqlx_topic",
+		Address: "sqlx_topic",
 		OrderingKey: "key-1",
 		EventType:   "test.sqlx",
 		RetryLimit:  3,
@@ -67,8 +67,8 @@ func TestSendBatch_InsertsAll(t *testing.T) {
 	t.Cleanup(func() { _ = tx.Rollback() })
 
 	msgs := []outbox.Message{
-		{Data: []byte("a"), Destination: "batch", OrderingKey: "k1", EventType: "e1", RetryLimit: 3},
-		{Data: []byte("b"), Destination: "batch", OrderingKey: "k2", EventType: "e2", RetryLimit: 3},
+		{Data: []byte("a"), Address: "batch", OrderingKey: "k1", EventType: "e1", RetryLimit: 3},
+		{Data: []byte("b"), Address: "batch", OrderingKey: "k2", EventType: "e2", RetryLimit: 3},
 	}
 	require.NoError(t, outboxsqlx.SendBatch(context.Background(), tx, msgs))
 	require.NoError(t, tx.Commit())
