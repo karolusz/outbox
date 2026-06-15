@@ -18,12 +18,14 @@ type fakePublisher struct {
 	publishFn func(e *Message) error
 }
 
-func (f fakePublisher) Publish(c context.Context, e *Message) error {
+func (f fakePublisher) Publish(c context.Context, target string, e *Message) error {
 	if f.publishFn != nil {
 		return f.publishFn(e)
 	}
 	return nil
 }
+
+func (f fakePublisher) Close(ctx context.Context) error { return nil }
 
 // TestWorker_ExitsOnQueueClose ensures the worker goroutine exits cleanly
 // when its queue is closed, leaving no goroutines behind.

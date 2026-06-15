@@ -14,10 +14,10 @@ import (
 	"github.com/karolusz/outbox"
 )
 
-// Publisher records every message handed to Publish, partitioned by
-// Destination. Optional channels broadcast successful and failed publishes
-// for assertion-driven tests; an optional ForceErrorFn injects a per-message
-// failure decision.
+// Publisher records every message handed to Publish, partitioned by the
+// resolved broker target. Optional channels broadcast successful and failed
+// publishes for assertion-driven tests; an optional ForceErrorFn injects a
+// per-message failure decision.
 type Publisher struct {
 	// Logger is optional. If nil, no log lines are emitted.
 	Logger *zerolog.Logger
@@ -36,23 +36,28 @@ type Publisher struct {
 	// FailedChan (if set).
 	ForceErrorFn func(msg *outbox.Message) error
 
-	mu               sync.Mutex
-	messagesPerTopic map[string][]*outbox.Message
+	mu                sync.Mutex
+	messagesPerTarget map[string][]*outbox.Message
+	closed            bool
 }
 
 // New returns an empty Publisher; configure the public fields directly.
 func New() *Publisher {
-	return &Publisher{messagesPerTopic: make(map[string][]*outbox.Message)}
+	return &Publisher{messagesPerTarget: make(map[string][]*outbox.Message)}
 }
 
-// Publish records msg or simulates a failure per ForceErrorFn.
+// Publish records msg under target or simulates a failure per ForceErrorFn.
 // Safe for concurrent use across multiple workers.
-func (p *Publisher) Publish(ctx context.Context, msg *outbox.Message) error {
+func (p *Publisher) Publish(ctx context.Context, target string, msg *outbox.Message) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if p.Logger != nil {
-		p.Logger.Debug().Int64("event_id", msg.ID).Str("destination", msg.Destination).Msg("fake publish")
+		p.Logger.Debug().
+			Int64("event_id", msg.ID).
+			Str("address", msg.Address).
+			Str("target", target).
+			Msg("fake publish")
 	}
 
 	if p.ForceErrorFn != nil {
@@ -64,10 +69,10 @@ func (p *Publisher) Publish(ctx context.Context, msg *outbox.Message) error {
 		}
 	}
 
-	if p.messagesPerTopic == nil {
-		p.messagesPerTopic = make(map[string][]*outbox.Message)
+	if p.messagesPerTarget == nil {
+		p.messagesPerTarget = make(map[string][]*outbox.Message)
 	}
-	p.messagesPerTopic[msg.Destination] = append(p.messagesPerTopic[msg.Destination], msg)
+	p.messagesPerTarget[target] = append(p.messagesPerTarget[target], msg)
 
 	if p.BroadcastChan != nil {
 		p.BroadcastChan <- msg
@@ -75,29 +80,46 @@ func (p *Publisher) Publish(ctx context.Context, msg *outbox.Message) error {
 	return nil
 }
 
+// Close marks the publisher closed. Records the call so tests can assert
+// that the relay shutdown path invoked it; otherwise a no-op.
+func (p *Publisher) Close(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closed = true
+	return nil
+}
+
+// Closed reports whether Close has been called. Useful for tests verifying
+// the relay's shutdown path invokes the Publisher's Close.
+func (p *Publisher) Closed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.closed
+}
+
 // PublishedCount returns how many messages were recorded against the given
-// destination. Pass "" for the total across all destinations.
-func (p *Publisher) PublishedCount(destination string) int {
+// target. Pass "" for the total across all targets.
+func (p *Publisher) PublishedCount(target string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if destination == "" {
+	if target == "" {
 		n := 0
-		for _, msgs := range p.messagesPerTopic {
+		for _, msgs := range p.messagesPerTarget {
 			n += len(msgs)
 		}
 		return n
 	}
-	return len(p.messagesPerTopic[destination])
+	return len(p.messagesPerTarget[target])
 }
 
-// PublishedTo returns the recorded messages for the given destination, or
+// PublishedTo returns the recorded messages for the given target, or
 // nil if none. The returned slice is a shallow copy; the messages themselves
 // are not deep-copied.
-func (p *Publisher) PublishedTo(destination string) []*outbox.Message {
+func (p *Publisher) PublishedTo(target string) []*outbox.Message {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	src := p.messagesPerTopic[destination]
+	src := p.messagesPerTarget[target]
 	if src == nil {
 		return nil
 	}

@@ -18,9 +18,21 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// Publisher is the contract every broker plugin satisfies.
+//
+// Publish is called by the relay's worker for each row. target is the
+// broker-specific destination name (e.g. a Pub/Sub topic) — in v0.2+ it is
+// resolved from msg.Address by the address book, and in v0.1-compatible
+// setups it equals msg.Address. msg is the full row for context (payload,
+// ordering key, attributes, id). Implementations MUST be safe for
+// concurrent calls — multiple workers share the same Publisher instance.
+//
+// Close releases any resources the publisher holds (broker connections,
+// background batching goroutines, etc.). Called once at relay shutdown.
+// Plugins with nothing to release return nil.
 type Publisher interface {
-	// Publish events and return successfully published ids
-	Publish(ctx context.Context, event *Message) error
+	Publish(ctx context.Context, target string, msg *Message) error
+	Close(ctx context.Context) error
 }
 
 type WorkerConfig struct {
