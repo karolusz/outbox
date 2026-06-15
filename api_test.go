@@ -30,7 +30,7 @@ func TestSend_CanCreateDBEntry(t *testing.T) {
 	msg := Message{
 		Data:        []byte("test payload"),
 		Attributes:  JSONBMap{"foo": "bar"},
-		Destination: "test_topic",
+		Address: "test_topic",
 		OrderingKey: "key1",
 		EventType:   "test.event",
 		RetryLimit:  5,
@@ -50,9 +50,9 @@ func TestSendBatch_CanCreateMultipleEntries(t *testing.T) {
 	db, _ := setupTest(t, "TestSendBatch_CanCreateMultipleEntries", "")
 
 	msgs := []Message{
-		{Data: []byte("one"), Destination: "batch_topic", OrderingKey: "k1", EventType: "evt.1", RetryLimit: 3},
-		{Data: []byte("two"), Destination: "batch_topic", OrderingKey: "k2", EventType: "evt.2", RetryLimit: 3},
-		{Data: []byte("three"), Destination: "batch_topic", OrderingKey: "k3", EventType: "evt.3", RetryLimit: 3},
+		{Data: []byte("one"), Address: "batch_topic", OrderingKey: "k1", EventType: "evt.1", RetryLimit: 3},
+		{Data: []byte("two"), Address: "batch_topic", OrderingKey: "k2", EventType: "evt.2", RetryLimit: 3},
+		{Data: []byte("three"), Address: "batch_topic", OrderingKey: "k3", EventType: "evt.3", RetryLimit: 3},
 	}
 
 	err := SendBatch(context.Background(), sqlxDBWriter{db}, msgs)

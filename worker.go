@@ -149,7 +149,9 @@ func (o *OutboxRelay) processOne(ctx context.Context, logger zerolog.Logger, id 
 	attemptNum := outboxEvent.RetryCount + 1
 	logger = logger.With().Int("attempt", attemptNum).Int64("event_id", outboxEvent.ID).Logger()
 
-	if publishErr := o.pub.Publish(ctx, outboxEvent); publishErr != nil {
+	// In v0.1, target equals the logical address. v0.2 will resolve via the
+	// address book here.
+	if publishErr := o.pub.Publish(ctx, outboxEvent.Address, outboxEvent); publishErr != nil {
 		logger.Debug().Err(publishErr).Msg("failed to publish outbox event")
 		outboxEvent.RetryCount++
 		if updateErr := incrementRetryCount(tx, outboxEvent.ID); updateErr != nil {
