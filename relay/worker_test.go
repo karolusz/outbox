@@ -1,6 +1,6 @@
 //go:build testing
 
-package outbox
+package relay
 
 import (
 	"context"
@@ -10,15 +10,17 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/karolusz/outbox"
 	"github.com/karolusz/outbox/internal/testutils"
+	"github.com/karolusz/outbox/publisher"
 	"github.com/stretchr/testify/require"
 )
 
 type fakePublisher struct {
-	publishFn func(e *Message) error
+	publishFn func(e *publisher.Message) error
 }
 
-func (f fakePublisher) Publish(c context.Context, target string, e *Message) error {
+func (f fakePublisher) Publish(c context.Context, target string, e *publisher.Message) error {
 	if f.publishFn != nil {
 		return f.publishFn(e)
 	}
@@ -41,11 +43,11 @@ func TestWorker_ExitsOnQueueClose(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 
-		o := &OutboxRelay{
+		o := &Relay{
 			db:        db,
 			logger:    &testLogger,
 			workerCfg: &WorkerConfig{},
-			book:      SinglePublisherAddressBook(fakePublisher{publishFn: func(e *Message) error { return nil }}),
+			book:      outbox.SinglePublisherAddressBook(fakePublisher{publishFn: func(e *publisher.Message) error { return nil }}),
 		}
 
 		queue := make(chan int64)
@@ -71,11 +73,11 @@ func TestWorker_ExitsOnContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	o := &OutboxRelay{
+	o := &Relay{
 		db:        db,
 		logger:    &testLogger,
 		workerCfg: &WorkerConfig{},
-		book:      SinglePublisherAddressBook(fakePublisher{publishFn: func(e *Message) error { return nil }}),
+		book:      outbox.SinglePublisherAddressBook(fakePublisher{publishFn: func(e *publisher.Message) error { return nil }}),
 	}
 
 	queue := make(chan int64, 4)
@@ -110,12 +112,12 @@ func TestWorker_RecoversFromPanicAndContinues(t *testing.T) {
 	defer cancel()
 
 	processed := make(chan int64, 2)
-	o := &OutboxRelay{
+	o := &Relay{
 		db:        db,
 		logger:    &testLogger,
 		workerCfg: &WorkerConfig{WorkerCount: 1},
-		book: SinglePublisherAddressBook(fakePublisher{
-			publishFn: func(e *Message) error {
+		book: outbox.SinglePublisherAddressBook(fakePublisher{
+			publishFn: func(e *publisher.Message) error {
 				if e.ID == 999 {
 					panic("simulated panic")
 				}
@@ -168,12 +170,12 @@ func TestProcessOne_PanicReturnsErrPanic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	o := &OutboxRelay{
+	o := &Relay{
 		db:        db,
 		logger:    &testLogger,
 		workerCfg: &WorkerConfig{},
-		book: SinglePublisherAddressBook(fakePublisher{
-			publishFn: func(e *Message) error { panic("boom") },
+		book: outbox.SinglePublisherAddressBook(fakePublisher{
+			publishFn: func(e *publisher.Message) error { panic("boom") },
 		}),
 	}
 
@@ -193,7 +195,7 @@ func TestMarkPanickedDeliveryAttempt_IncrementsRetryCount(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	o := &OutboxRelay{db: db, logger: &testLogger, workerCfg: &WorkerConfig{}}
+	o := &Relay{db: db, logger: &testLogger, workerCfg: &WorkerConfig{}}
 
 	var initial int
 	require.NoError(t, db.Get(&initial, "SELECT retry_count FROM outbox_events WHERE id = 999"))
@@ -219,7 +221,7 @@ func TestMarkPanickedDeliveryAttempt_SkipsWhenLocked(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	o := &OutboxRelay{db: db, logger: &testLogger, workerCfg: &WorkerConfig{}}
+	o := &Relay{db: db, logger: &testLogger, workerCfg: &WorkerConfig{}}
 
 	var initialRetry int
 	require.NoError(t, db.Get(&initialRetry, "SELECT retry_count FROM outbox_events WHERE id = 999"))
@@ -276,10 +278,10 @@ func TestWorker_HandlesMultipleConsecutivePanics(t *testing.T) {
 	defer cancel()
 
 	publishCount := 0
-	o := &OutboxRelay{
+	o := &Relay{
 		db: db, logger: &testLogger, workerCfg: &WorkerConfig{WorkerCount: 1},
-		book: SinglePublisherAddressBook(fakePublisher{
-			publishFn: func(e *Message) error {
+		book: outbox.SinglePublisherAddressBook(fakePublisher{
+			publishFn: func(e *publisher.Message) error {
 				publishCount++
 				if publishCount <= 2 {
 					panic(fmt.Sprintf("forced panic %d on event %d", publishCount, e.ID))
@@ -333,10 +335,10 @@ func TestWorker_DoesNotMarkOnNormalPublishError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	o := &OutboxRelay{
+	o := &Relay{
 		db: db, logger: &testLogger, workerCfg: &WorkerConfig{WorkerCount: 1},
-		book: SinglePublisherAddressBook(fakePublisher{
-			publishFn: func(e *Message) error {
+		book: outbox.SinglePublisherAddressBook(fakePublisher{
+			publishFn: func(e *publisher.Message) error {
 				return fmt.Errorf("simulated publish error (NOT a panic)")
 			},
 		}),
@@ -384,10 +386,10 @@ func TestWorker_PanicsBoundedByRetryLimit(t *testing.T) {
 	defer cancel()
 
 	publishCount := 0
-	o := &OutboxRelay{
+	o := &Relay{
 		db: db, logger: &testLogger, workerCfg: &WorkerConfig{WorkerCount: 1},
-		book: SinglePublisherAddressBook(fakePublisher{
-			publishFn: func(e *Message) error {
+		book: outbox.SinglePublisherAddressBook(fakePublisher{
+			publishFn: func(e *publisher.Message) error {
 				publishCount++
 				panic("always panic")
 			},
@@ -431,7 +433,7 @@ func TestMarkPanickedDeliveryAttempt_NoOpOnMissingRow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	o := &OutboxRelay{db: db, logger: &testLogger, workerCfg: &WorkerConfig{}}
+	o := &Relay{db: db, logger: &testLogger, workerCfg: &WorkerConfig{}}
 
 	require.NoError(t, o.markPanickedDeliveryAttempt(ctx, 999999, fmt.Errorf("simulated panic")),
 		"marking a non-existent row must be a no-op; covers the post-commit panic edge case")
@@ -448,7 +450,7 @@ func TestMarkPanickedDeliveryAttempt_SkipsAtRetryLimit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	o := &OutboxRelay{db: db, logger: &testLogger, workerCfg: &WorkerConfig{}}
+	o := &Relay{db: db, logger: &testLogger, workerCfg: &WorkerConfig{}}
 
 	// Force row 999 to be at the cap.
 	_, err := db.Exec("UPDATE outbox_events SET retry_count = retry_limit WHERE id = 999")

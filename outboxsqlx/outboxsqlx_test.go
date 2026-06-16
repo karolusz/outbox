@@ -13,6 +13,7 @@ import (
 	"github.com/karolusz/outbox"
 	"github.com/karolusz/outbox/internal/testutils"
 	"github.com/karolusz/outbox/outboxsqlx"
+	"github.com/karolusz/outbox/publisher"
 )
 
 // TestSend_InsertsRow exercises the outboxsqlx public path end-to-end:
@@ -36,8 +37,8 @@ func TestSend_InsertsRow(t *testing.T) {
 
 	msg := outbox.Message{
 		Data:        []byte("hello via outboxsqlx"),
-		Attributes:  outbox.JSONBMap{"k": "v"},
-		Address: "sqlx_topic",
+		Attributes:  publisher.JSONBMap{"k": "v"},
+		Address:     "sqlx_topic",
 		OrderingKey: "key-1",
 		EventType:   "test.sqlx",
 		RetryLimit:  3,
@@ -77,4 +78,3 @@ func TestSendBatch_InsertsAll(t *testing.T) {
 	require.NoError(t, db.Get(&count, "SELECT COUNT(*) FROM outbox_events WHERE topic = $1", "batch"))
 	require.Equal(t, 2, count)
 }
-

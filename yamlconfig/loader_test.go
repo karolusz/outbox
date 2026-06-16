@@ -1,6 +1,6 @@
 //go:build testing
 
-package outbox
+package yamlconfig
 
 import (
 	"context"
@@ -11,27 +11,23 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/karolusz/outbox"
+	"github.com/karolusz/outbox/publisher"
 )
 
-// loaderTestSetup blank-imports the lib-shipped plugins so the registry is
-// populated before each test that needs them. Tests that mutate the
-// registry should defer resetPluginRegistry().
-//
-// We register a fake factory here directly rather than blank-import the
-// publisher/fake package because importing it would create a circular
-// dependency (publisher/fake → outbox → loader → ... back to fake).
-// The loader tests need plugins registered; the trick is to register
-// minimal stub factories from within the outbox package itself.
+// loaderTestSetup populates the plugin registry with stub factories the
+// loader tests reference by name. We register minimal stubs here rather
+// than blank-import the real publisher/fake and publisher/gcppubsub
+// packages because we want the loader's behaviour exercised in isolation
+// from those plugins' specifics.
 func loaderTestSetup(t *testing.T) {
 	t.Helper()
-	resetPluginRegistry()
-	// Register a no-op "fake" factory and a "gcppubsub" factory that
-	// validates the config has a project. These cover the loader-test
-	// scenarios without depending on the real plugin packages.
-	RegisterPlugin("fake", func(ctx context.Context, decode ConfigDecoder) (Publisher, error) {
+	publisher.ResetForTests()
+	publisher.Register("fake", func(ctx context.Context, decode publisher.ConfigDecoder) (publisher.Publisher, error) {
 		return loaderTestPublisher{name: "fake"}, nil
 	})
-	RegisterPlugin("gcppubsub", func(ctx context.Context, decode ConfigDecoder) (Publisher, error) {
+	publisher.Register("gcppubsub", func(ctx context.Context, decode publisher.ConfigDecoder) (publisher.Publisher, error) {
 		// Decode into a struct that mirrors the real plugin's minimal
 		// requirement — Project must be present. Confirms the decoder
 		// closure reaches plugin code with the right node attached.
@@ -46,18 +42,18 @@ func loaderTestSetup(t *testing.T) {
 		}
 		return loaderTestPublisher{name: "gcppubsub"}, nil
 	})
-	t.Cleanup(resetPluginRegistry)
+	t.Cleanup(publisher.ResetForTests)
 }
 
 type loaderTestPublisher struct{ name string }
 
-func (p loaderTestPublisher) Publish(ctx context.Context, target string, msg *Message) error {
+func (p loaderTestPublisher) Publish(ctx context.Context, target string, msg *publisher.Message) error {
 	return nil
 }
 func (p loaderTestPublisher) Close(ctx context.Context) error { return nil }
 
 func fixture(name string) string {
-	return filepath.Join("testdata", "loader", name)
+	return filepath.Join("testdata", name)
 }
 
 func TestLoadAddressBook_HappyPath(t *testing.T) {
@@ -152,10 +148,10 @@ func TestLoadAddressBook_MissingConfigBlock_ZeroValueDecoded(t *testing.T) {
 	require.NotNil(t, book)
 }
 
-func TestLoadAddressBook_GcppubsubConfigBytesPassedThrough(t *testing.T) {
-	// The loader marshals the config Node back to bytes and hands them
-	// to the factory. Our test gcppubsub factory checks that the bytes
-	// are non-empty — proves end-to-end byte flow works.
+func TestLoadAddressBook_GcppubsubConfigPassedThrough(t *testing.T) {
+	// The loader builds a decoder closure over the parsed yaml.Node and
+	// hands it to the factory. The test gcppubsub factory above requires
+	// a non-empty Project field — proves end-to-end decoder flow works.
 	loaderTestSetup(t)
 
 	book, err := LoadAddressBook(t.Context(), fixture("gcppubsub_with_config.yaml"))
@@ -170,7 +166,7 @@ func TestLoadAddressBook_UserOptOverlap_StillErrors(t *testing.T) {
 	loaderTestSetup(t)
 
 	_, err := LoadAddressBook(t.Context(), fixture("dup_with_user_opt.yaml"),
-		WithPublisher("fake-a", loaderTestPublisher{name: "user-supplied"}),
+		outbox.WithPublisher("fake-a", loaderTestPublisher{name: "user-supplied"}),
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `publisher key "fake-a" registered 2 times`)
@@ -182,8 +178,8 @@ func TestLoadAddressBook_UserOptAddsToYAML(t *testing.T) {
 	loaderTestSetup(t)
 
 	book, err := LoadAddressBook(t.Context(), fixture("happy.yaml"),
-		WithPublisher("extra", loaderTestPublisher{name: "extra"}),
-		WithRoute("event.extra.v1", Route{Publisher: "extra", Target: "extra-target"}),
+		outbox.WithPublisher("extra", loaderTestPublisher{name: "extra"}),
+		outbox.WithRoute("event.extra.v1", outbox.Route{Publisher: "extra", Target: "extra-target"}),
 	)
 	require.NoError(t, err)
 
@@ -197,8 +193,8 @@ func TestLoadAddressBookValidateOnly_HappyPath(t *testing.T) {
 	// The validate-only loader does NOT need plugins to be registered
 	// because it doesn't instantiate publishers. Don't call
 	// loaderTestSetup — fresh registry, but loader should still succeed.
-	resetPluginRegistry()
-	t.Cleanup(resetPluginRegistry)
+	publisher.ResetForTests()
+	t.Cleanup(publisher.ResetForTests)
 
 	book, err := LoadAddressBookValidateOnly(fixture("happy.yaml"))
 	require.NoError(t, err)
@@ -207,15 +203,15 @@ func TestLoadAddressBookValidateOnly_HappyPath(t *testing.T) {
 	assert.True(t, book.Has("event.alpha.v1"))
 	assert.False(t, book.Has("nonexistent"))
 	assert.NoError(t, book.Validate("event.beta.v1"))
-	assert.ErrorIs(t, book.Validate("nonexistent"), ErrUnknownAddress)
+	assert.ErrorIs(t, book.Validate("nonexistent"), outbox.ErrUnknownAddress)
 }
 
 func TestLoadAddressBookValidateOnly_PluginNotRegistered_StillSucceeds(t *testing.T) {
 	// The whole point of validate-only is that producer binaries can
 	// validate addresses without depending on plugin packages. The
 	// unknown plugin in the YAML should NOT cause a failure here.
-	resetPluginRegistry()
-	t.Cleanup(resetPluginRegistry)
+	publisher.ResetForTests()
+	t.Cleanup(publisher.ResetForTests)
 
 	book, err := LoadAddressBookValidateOnly(fixture("unknown_plugin.yaml"))
 	require.NoError(t, err)
@@ -227,8 +223,8 @@ func TestLoadAddressBookValidateOnly_ResolveReturnsStub(t *testing.T) {
 	// Validate-only books return the stub publisher from Resolve. Its
 	// Publish errors clearly so adopters know they cannot use a
 	// validate-only book for delivery.
-	resetPluginRegistry()
-	t.Cleanup(resetPluginRegistry)
+	publisher.ResetForTests()
+	t.Cleanup(publisher.ResetForTests)
 
 	book, err := LoadAddressBookValidateOnly(fixture("happy.yaml"))
 	require.NoError(t, err)
@@ -240,7 +236,7 @@ func TestLoadAddressBookValidateOnly_ResolveReturnsStub(t *testing.T) {
 
 	// Attempting to publish through the stub should error with a clear
 	// "validate-only" message.
-	err = pub.Publish(t.Context(), target, &Message{})
+	err = pub.Publish(t.Context(), target, &publisher.Message{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "validate-only")
 }

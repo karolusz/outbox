@@ -1,4 +1,4 @@
-.PHONY: help test-up test-down test-clean test test-unit test test-coverage build vet
+.PHONY: help test-up test-down test-clean test test-unit test test-coverage build vet check-producer-deps
 
 # Connection string the tests pick up from DB_CONNECTION_STRING. Matches the
 # compose file: user "outbox", db "outbox", port 5434 on localhost.
@@ -14,6 +14,7 @@ help:
 	@echo "  test-coverage  Run the full suite with coverage output."
 	@echo "  build          Build all packages."
 	@echo "  vet            Run go vet across all packages."
+	@echo "  check-producer-deps  Fail if the producer-facing packages have any third-party deps."
 
 # Bring up the local Postgres. Waits for healthy.
 test-up:
@@ -48,3 +49,19 @@ build:
 vet:
 	go vet ./...
 	go vet -tags=testing ./...
+
+# Guardrail against future bloat sneaking into the producer-facing packages.
+# Both packages must stay stdlib-only so producers using outbox.Send do not
+# inherit any third-party deps. Fails noisily if either package picks up
+# a third-party transitive.
+check-producer-deps:
+	@set -e; \
+	for pkg in github.com/karolusz/outbox github.com/karolusz/outbox/publisher; do \
+		leaks=$$(go list -deps "$$pkg" | grep -E '^[a-z0-9-]+\.[a-z]' | grep -v '^github.com/karolusz/outbox' || true); \
+		if [ -n "$$leaks" ]; then \
+			echo "FAIL: $$pkg has third-party deps:"; \
+			echo "$$leaks" | sed 's/^/  - /'; \
+			exit 1; \
+		fi; \
+	done; \
+	echo "OK: producer-facing packages are stdlib-only"

@@ -1,6 +1,6 @@
 //go:build testing
 
-package outbox
+package relay
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/karolusz/outbox"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,8 +16,8 @@ import (
 // countingMetrics records IncUnknownAddress calls. Used to assert the
 // relay correctly emits the unknown-address signal.
 type countingMetrics struct {
-	mu       sync.Mutex
-	unknown  []string // addresses that came in, in order
+	mu      sync.Mutex
+	unknown []string // addresses that came in, in order
 }
 
 func (m *countingMetrics) IncUnknownAddress(address string) {
@@ -47,14 +48,14 @@ func TestProcessOne_UnknownAddress_PreservesRetryCount(t *testing.T) {
 
 	// Address book has NO entry for "address.not.in.book.v1" (the address
 	// used by the seeded row).
-	book, err := NewAddressBook(
-		WithPublisher("some-pub", fakePublisher{}),
-		WithRoute("a.different.address", Route{Publisher: "some-pub", Target: "t"}),
+	book, err := outbox.NewAddressBook(
+		outbox.WithPublisher("some-pub", fakePublisher{}),
+		outbox.WithRoute("a.different.address", outbox.Route{Publisher: "some-pub", Target: "t"}),
 	)
 	require.NoError(t, err)
 
 	metrics := &countingMetrics{}
-	o := &OutboxRelay{
+	o := &Relay{
 		db:        db,
 		logger:    &testLogger,
 		workerCfg: &WorkerConfig{},
@@ -94,14 +95,14 @@ func TestProcessOne_UnknownAddress_RecoverableAfterBookUpdate(t *testing.T) {
 	defer cancel()
 
 	// First pass: book doesn't know the address.
-	bookIncomplete, err := NewAddressBook(
-		WithPublisher("p", fakePublisher{}),
-		WithRoute("a.different.address", Route{Publisher: "p", Target: "t"}),
+	bookIncomplete, err := outbox.NewAddressBook(
+		outbox.WithPublisher("p", fakePublisher{}),
+		outbox.WithRoute("a.different.address", outbox.Route{Publisher: "p", Target: "t"}),
 	)
 	require.NoError(t, err)
 
 	pub := fakePublisher{}
-	o := &OutboxRelay{
+	o := &Relay{
 		db:        db,
 		logger:    &testLogger,
 		workerCfg: &WorkerConfig{},
@@ -111,9 +112,9 @@ func TestProcessOne_UnknownAddress_RecoverableAfterBookUpdate(t *testing.T) {
 	require.NoError(t, o.processOne(ctx, testLogger, 777))
 
 	// Second pass: book now knows the address.
-	bookUpdated, err := NewAddressBook(
-		WithPublisher("p", pub),
-		WithRoute("address.not.in.book.v1", Route{Publisher: "p", Target: "recovered-target"}),
+	bookUpdated, err := outbox.NewAddressBook(
+		outbox.WithPublisher("p", pub),
+		outbox.WithRoute("address.not.in.book.v1", outbox.Route{Publisher: "p", Target: "recovered-target"}),
 	)
 	require.NoError(t, err)
 	o.book = bookUpdated
@@ -136,7 +137,7 @@ func TestProcessOne_UnknownAddress_RecoverableAfterBookUpdate(t *testing.T) {
 // address straight to the supplied publisher with target=address.
 func TestSinglePublisherAddressBook_Resolve_PassesAddressAsTarget(t *testing.T) {
 	pub := fakePublisher{}
-	book := SinglePublisherAddressBook(pub)
+	book := outbox.SinglePublisherAddressBook(pub)
 
 	gotPub, target, err := book.Resolve("any.address.you.like")
 	require.NoError(t, err)
@@ -145,20 +146,20 @@ func TestSinglePublisherAddressBook_Resolve_PassesAddressAsTarget(t *testing.T) 
 }
 
 func TestSinglePublisherAddressBook_HasAlwaysTrue(t *testing.T) {
-	book := SinglePublisherAddressBook(fakePublisher{})
+	book := outbox.SinglePublisherAddressBook(fakePublisher{})
 	assert.True(t, book.Has("literally.anything"))
 	assert.True(t, book.Has(""))
 }
 
 func TestSinglePublisherAddressBook_ValidateAlwaysNil(t *testing.T) {
-	book := SinglePublisherAddressBook(fakePublisher{})
+	book := outbox.SinglePublisherAddressBook(fakePublisher{})
 	assert.NoError(t, book.Validate("literally.anything"))
 }
 
 // TestSetMetrics_NilRestoresNoop covers the contract that SetMetrics(nil)
 // restores the noop default rather than panicking later.
 func TestSetMetrics_NilRestoresNoop(t *testing.T) {
-	o := &OutboxRelay{metrics: &countingMetrics{}}
+	o := &Relay{metrics: &countingMetrics{}}
 	o.SetMetrics(nil)
 	require.NotNil(t, o.metrics, "SetMetrics(nil) must install a non-nil noop metrics impl")
 	// Calling a method shouldn't panic.

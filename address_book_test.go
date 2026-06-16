@@ -123,7 +123,7 @@ func TestNewAddressBook_AggregatesAllErrors(t *testing.T) {
 		WithPublisher("p", stubPublisher{}),
 		WithPublisher("p", stubPublisher{}), // duplicate publisher
 		WithRoute("event.a.v1", Route{Publisher: "p", Target: "t1"}),
-		WithRoute("event.a.v1", Route{Publisher: "p", Target: "t2"}), // duplicate route
+		WithRoute("event.a.v1", Route{Publisher: "p", Target: "t2"}),       // duplicate route
 		WithRoute("event.b.v1", Route{Publisher: "missing", Target: "t3"}), // unknown publisher
 		WithRoute("event.c.v1", Route{Publisher: "p", Target: ""}),         // empty target
 	)

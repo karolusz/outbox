@@ -1,4 +1,4 @@
-package outbox
+package relay
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	"github.com/rs/zerolog"
+
+	"github.com/karolusz/outbox"
 )
 
 var (
@@ -27,7 +29,7 @@ var (
 // processOne and markPanickedDeliveryAttempt convert any panic they encounter
 // into an error via a named return + defer recover, so the worker goroutine
 // never dies and always proceeds to the next id.
-func (o *OutboxRelay) worker(ctx context.Context, idx int, queue <-chan int64) {
+func (o *Relay) worker(ctx context.Context, idx int, queue <-chan int64) {
 	logger := o.logger.With().Int("worker", idx).Logger()
 	logger.Debug().Msg("worker started")
 
@@ -73,7 +75,7 @@ func (o *OutboxRelay) worker(ctx context.Context, idx int, queue <-chan int64) {
 // any panic that occurs inside it (e.g. driver bug, OOM mid-call): the panic
 // is converted to an error and returned to the caller. If marking fails, the
 // row stays unchanged and is re-picked on the next poll cycle.
-func (o *OutboxRelay) markPanickedDeliveryAttempt(ctx context.Context, id int64, cause error) (err error) {
+func (o *Relay) markPanickedDeliveryAttempt(ctx context.Context, id int64, cause error) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = fmt.Errorf("panic while marking panicked attempt: %v", p)
@@ -120,7 +122,7 @@ func (o *OutboxRelay) markPanickedDeliveryAttempt(ctx context.Context, id int64,
 //
 // On regular publish failure: retry_count is incremented inside this tx and
 // the original publish error is returned. The caller does NOT mark again.
-func (o *OutboxRelay) processOne(ctx context.Context, logger zerolog.Logger, id int64) (err error) {
+func (o *Relay) processOne(ctx context.Context, logger zerolog.Logger, id int64) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = fmt.Errorf("%w: %v", ErrPanic, p)
@@ -150,13 +152,13 @@ func (o *OutboxRelay) processOne(ctx context.Context, logger zerolog.Logger, id 
 	logger = logger.With().Int("attempt", attemptNum).Int64("event_id", outboxEvent.ID).Logger()
 
 	// Resolve the logical address to (Publisher, broker target). On
-	// ErrUnknownAddress: bump last_attempted_at so the row is throttled
+	// outbox.ErrUnknownAddress: bump last_attempted_at so the row is throttled
 	// out of the next worker tick, but do NOT touch retry_count — that
 	// would eventually push the row past retry_limit and make it
 	// invisible to polling, losing the data when the relay later learns
 	// the address. See setLastAttemptedAt in repository.go.
 	publisher, target, resolveErr := o.book.Resolve(outboxEvent.Address)
-	if errors.Is(resolveErr, ErrUnknownAddress) {
+	if errors.Is(resolveErr, outbox.ErrUnknownAddress) {
 		logger.Error().Str("address", outboxEvent.Address).Msg("unknown address; preserving row for retry once address book is updated")
 		o.metrics.IncUnknownAddress(outboxEvent.Address)
 		if updateErr := setLastAttemptedAt(tx, outboxEvent.ID); updateErr != nil {

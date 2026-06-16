@@ -20,7 +20,7 @@ import (
 
 	"cloud.google.com/go/pubsub"
 
-	"github.com/karolusz/outbox"
+	outboxpub "github.com/karolusz/outbox/publisher"
 )
 
 // Publisher publishes outbox Messages to GCP Pub/Sub topics. Satisfies
@@ -64,7 +64,7 @@ func NewWithClient(client *pubsub.Client) *Publisher {
 // Publish sends msg to the Pub/Sub topic named in target and blocks until
 // the broker acks (or returns an error). The full broker error is returned
 // to the relay verbatim — there is no error-classification logic in v0.
-func (p *Publisher) Publish(ctx context.Context, target string, msg *outbox.Message) error {
+func (p *Publisher) Publish(ctx context.Context, target string, msg *outboxpub.Message) error {
 	if target == "" {
 		return fmt.Errorf("pubsub: empty target for message id=%d (address=%q)", msg.ID, msg.Address)
 	}
@@ -94,7 +94,7 @@ func (p *Publisher) Close(ctx context.Context) error {
 // After the import, the YAML loader (or any caller of outbox's plugin
 // registry) can instantiate gcppubsub publishers by name.
 func init() {
-	outbox.RegisterPlugin("gcppubsub", func(ctx context.Context, decode outbox.ConfigDecoder) (outbox.Publisher, error) {
+	outboxpub.Register("gcppubsub", func(ctx context.Context, decode outboxpub.ConfigDecoder) (outboxpub.Publisher, error) {
 		var cfg Config
 		if err := decode(&cfg); err != nil {
 			return nil, fmt.Errorf("gcppubsub: parse config: %w", err)
