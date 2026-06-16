@@ -102,33 +102,11 @@ func NewAddressBook(opts ...AddressBookOption) (*AddressBook, error) {
 	}
 
 	var problems []error
-
-	if len(cfg.routes) == 0 {
-		problems = append(problems, errors.New("no routes registered"))
-	}
-
-	for _, key := range cfg.pubOrder {
-		if cfg.pubCount[key] > 1 {
-			problems = append(problems, fmt.Errorf("publisher key %q registered %d times", key, cfg.pubCount[key]))
-		}
-	}
-	for _, addr := range cfg.routeOrder {
-		if cfg.routeCount[addr] > 1 {
-			problems = append(problems, fmt.Errorf("address %q registered %d times", addr, cfg.routeCount[addr]))
-		}
-	}
-
-	for _, addr := range cfg.routeOrder {
-		route := cfg.routes[addr]
-		if route.Publisher == "" {
-			problems = append(problems, fmt.Errorf("route %q has empty Publisher reference", addr))
-		} else if _, ok := cfg.publishers[route.Publisher]; !ok {
-			problems = append(problems, fmt.Errorf("route %q references unregistered publisher %q", addr, route.Publisher))
-		}
-		if route.Target == "" {
-			problems = append(problems, fmt.Errorf("route %q has empty Target", addr))
-		}
-	}
+	problems = append(problems, validateAtLeastOneRoute(cfg)...)
+	problems = append(problems, validateUniquePublisherKeys(cfg)...)
+	problems = append(problems, validateUniqueAddresses(cfg)...)
+	problems = append(problems, validateRoutePublishers(cfg)...)
+	problems = append(problems, validateRouteTargets(cfg)...)
 
 	if len(problems) > 0 {
 		return nil, fmt.Errorf("address book construction failed:\n  - %w", errors.Join(problems...))
@@ -138,6 +116,71 @@ func NewAddressBook(opts ...AddressBookOption) (*AddressBook, error) {
 		routes:     cfg.routes,
 		publishers: cfg.publishers,
 	}, nil
+}
+
+// validateAtLeastOneRoute reports an error if no routes were registered.
+// An empty book is treated as misconfiguration — adopters typically intend
+// at least one address; an empty constructor call is almost always a bug.
+func validateAtLeastOneRoute(cfg *addressBookConfig) []error {
+	if len(cfg.routes) == 0 {
+		return []error{errors.New("no routes registered")}
+	}
+	return nil
+}
+
+// validateUniquePublisherKeys reports one error per publisher key that was
+// passed to WithPublisher more than once.
+func validateUniquePublisherKeys(cfg *addressBookConfig) []error {
+	var out []error
+	for _, key := range cfg.pubOrder {
+		if cfg.pubCount[key] > 1 {
+			out = append(out, fmt.Errorf("publisher key %q registered %d times", key, cfg.pubCount[key]))
+		}
+	}
+	return out
+}
+
+// validateUniqueAddresses reports one error per address that was passed to
+// WithRoute more than once.
+func validateUniqueAddresses(cfg *addressBookConfig) []error {
+	var out []error
+	for _, addr := range cfg.routeOrder {
+		if cfg.routeCount[addr] > 1 {
+			out = append(out, fmt.Errorf("address %q registered %d times", addr, cfg.routeCount[addr]))
+		}
+	}
+	return out
+}
+
+// validateRoutePublishers reports routes whose Publisher field is empty or
+// references a publisher key that was not registered. The two checks live
+// in one function because they are alternatives — an empty Publisher
+// short-circuits the "unregistered" check (no need to tell the operator
+// the empty string is unregistered).
+func validateRoutePublishers(cfg *addressBookConfig) []error {
+	var out []error
+	for _, addr := range cfg.routeOrder {
+		route := cfg.routes[addr]
+		if route.Publisher == "" {
+			out = append(out, fmt.Errorf("route %q has empty Publisher reference", addr))
+			continue
+		}
+		if _, ok := cfg.publishers[route.Publisher]; !ok {
+			out = append(out, fmt.Errorf("route %q references unregistered publisher %q", addr, route.Publisher))
+		}
+	}
+	return out
+}
+
+// validateRouteTargets reports routes whose Target field is empty.
+func validateRouteTargets(cfg *addressBookConfig) []error {
+	var out []error
+	for _, addr := range cfg.routeOrder {
+		if cfg.routes[addr].Target == "" {
+			out = append(out, fmt.Errorf("route %q has empty Target", addr))
+		}
+	}
+	return out
 }
 
 // Resolve looks up an address and returns its Publisher instance and the
