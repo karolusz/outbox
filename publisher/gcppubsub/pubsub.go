@@ -19,7 +19,6 @@ import (
 	"fmt"
 
 	"cloud.google.com/go/pubsub"
-	"gopkg.in/yaml.v3"
 
 	"github.com/karolusz/outbox"
 )
@@ -95,9 +94,9 @@ func (p *Publisher) Close(ctx context.Context) error {
 // After the import, the YAML loader (or any caller of outbox's plugin
 // registry) can instantiate gcppubsub publishers by name.
 func init() {
-	outbox.RegisterPlugin("gcppubsub", func(ctx context.Context, raw []byte) (outbox.Publisher, error) {
+	outbox.RegisterPlugin("gcppubsub", func(ctx context.Context, decode outbox.ConfigDecoder) (outbox.Publisher, error) {
 		var cfg Config
-		if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		if err := decode(&cfg); err != nil {
 			return nil, fmt.Errorf("gcppubsub: parse config: %w", err)
 		}
 		return NewFromConfig(ctx, cfg)
