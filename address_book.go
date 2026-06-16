@@ -19,14 +19,23 @@ type Route struct {
 
 // AddressBook is the routing table between producer-visible logical
 // addresses and concrete (Publisher, target) pairs. Constructed once at
-// relay startup via NewAddressBook (or LoadAddressBook, which is layered
-// on top in a separate file). Immutable after construction.
+// relay startup via NewAddressBook or LoadAddressBook. Immutable after
+// construction.
 //
 // AddressBook is safe for concurrent reads. There is no public write API
 // after NewAddressBook returns.
+//
+// A book constructed via SinglePublisherAddressBook behaves differently:
+// every Resolve returns the configured publisher with target equal to the
+// address. This is a v0.1 migration aid; the routes/publishers maps are
+// empty in that mode.
 type AddressBook struct {
 	routes     map[string]Route
 	publishers map[string]Publisher
+
+	// passthrough, when non-nil, makes Resolve return (passthrough, address, nil)
+	// for any address. Set only by SinglePublisherAddressBook.
+	passthrough Publisher
 }
 
 // addressBookConfig is the internal accumulator passed through options.
@@ -186,7 +195,14 @@ func validateRouteTargets(cfg *addressBookConfig) []error {
 // Resolve looks up an address and returns its Publisher instance and the
 // broker target the publisher should write to. Returns an error wrapping
 // ErrUnknownAddress when the address is not registered.
+//
+// In a single-publisher book (see SinglePublisherAddressBook), every
+// address resolves to the configured publisher with target equal to the
+// address. The address is otherwise opaque to the book.
 func (b *AddressBook) Resolve(address string) (Publisher, string, error) {
+	if b.passthrough != nil {
+		return b.passthrough, address, nil
+	}
 	route, ok := b.routes[address]
 	if !ok {
 		return nil, "", fmt.Errorf("%w: %q", ErrUnknownAddress, address)
@@ -201,8 +217,12 @@ func (b *AddressBook) Resolve(address string) (Publisher, string, error) {
 	return pub, route.Target, nil
 }
 
-// Has reports whether the given address is registered.
+// Has reports whether the given address is registered. In a single-
+// publisher book, every address is considered registered.
 func (b *AddressBook) Has(address string) bool {
+	if b.passthrough != nil {
+		return true
+	}
 	_, ok := b.routes[address]
 	return ok
 }
@@ -217,4 +237,18 @@ func (b *AddressBook) Validate(address string) error {
 		return fmt.Errorf("%w: %q", ErrUnknownAddress, address)
 	}
 	return nil
+}
+
+// SinglePublisherAddressBook is a v0.1 migration aid that returns an
+// AddressBook routing every address to the supplied Publisher, with
+// target equal to the address itself. The book has no validated routes;
+// Has returns true for every address.
+//
+// Use this when migrating from a v0.1-style setup where a single
+// Publisher served every message and msg.Address was the broker target
+// verbatim. For new setups, prefer NewAddressBook or LoadAddressBook so
+// addresses and targets are explicitly mapped — that decoupling is the
+// whole point of the address book.
+func SinglePublisherAddressBook(p Publisher) *AddressBook {
+	return &AddressBook{passthrough: p}
 }
