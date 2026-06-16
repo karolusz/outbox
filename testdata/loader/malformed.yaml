@@ -1,0 +1,7 @@
+version: 1
+
+publishers:
+  - name: fake-a
+    plugin: fake
+    config: {}
+   broken indent here - this is invalid yaml

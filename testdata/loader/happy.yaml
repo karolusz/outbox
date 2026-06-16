@@ -1,0 +1,23 @@
+version: 1
+
+publishers:
+  - name: fake-a
+    plugin: fake
+    config: {}
+
+  - name: fake-b
+    plugin: fake
+    config: {}
+
+addresses:
+  - name: event.alpha.v1
+    publisher: fake-a
+    target: topic-alpha
+
+  - name: event.beta.v1
+    publisher: fake-a
+    target: topic-beta
+
+  - name: event.gamma.v1
+    publisher: fake-b
+    target: topic-gamma
