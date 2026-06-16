@@ -7,16 +7,27 @@ import (
 	"sync"
 )
 
-// PluginFactory builds a Publisher from raw YAML config bytes.
+// ConfigDecoder unmarshals a plugin's config block into a destination
+// struct. Plugin factories use this to populate their plugin-specific
+// Config type without knowing how the config arrives — YAML today (the
+// loader builds a closure over yaml.Node.Decode), potentially JSON, TOML,
+// or programmatic construction later. Plugins keep their `yaml:"name"`
+// struct tags; yaml.Node honours them during decode, and any future
+// format-aware decoder can do the same.
+//
+// Implementations may be called more than once with different destination
+// types; nothing about ConfigDecoder requires single-use semantics.
+type ConfigDecoder func(v any) error
+
+// PluginFactory builds a Publisher from a decoder over the plugin's
+// config block.
 //
 // Plugin authors register a factory via RegisterPlugin so the YAML loader
 // (and adopters using the in-Go construction path) can instantiate the
-// plugin's Publisher without knowing the plugin's internals. The rawConfig
-// slice is the YAML `config:` block beneath the plugin's entry in the
-// address book; the factory is responsible for unmarshalling it into a
-// plugin-specific struct, validating it, and returning a constructed
-// Publisher (or an error).
-type PluginFactory func(ctx context.Context, rawConfig []byte) (Publisher, error)
+// plugin's Publisher without knowing the plugin's internals. The factory
+// calls decode(&cfg) once into a plugin-specific Config struct, validates
+// it, and returns a constructed Publisher (or an error).
+type PluginFactory func(ctx context.Context, decode ConfigDecoder) (Publisher, error)
 
 // pluginRegistry holds registered plugin factories. The lock and the map
 // are kept together as one type so callers cannot accidentally read or

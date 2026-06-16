@@ -45,7 +45,7 @@ func TestWorker_ExitsOnQueueClose(t *testing.T) {
 			db:        db,
 			logger:    &testLogger,
 			workerCfg: &WorkerConfig{},
-			pub:       fakePublisher{publishFn: func(e *Message) error { return nil }},
+			book:      SinglePublisherAddressBook(fakePublisher{publishFn: func(e *Message) error { return nil }}),
 		}
 
 		queue := make(chan int64)
@@ -75,7 +75,7 @@ func TestWorker_ExitsOnContextCancel(t *testing.T) {
 		db:        db,
 		logger:    &testLogger,
 		workerCfg: &WorkerConfig{},
-		pub:       fakePublisher{publishFn: func(e *Message) error { return nil }},
+		book:      SinglePublisherAddressBook(fakePublisher{publishFn: func(e *Message) error { return nil }}),
 	}
 
 	queue := make(chan int64, 4)
@@ -114,7 +114,7 @@ func TestWorker_RecoversFromPanicAndContinues(t *testing.T) {
 		db:        db,
 		logger:    &testLogger,
 		workerCfg: &WorkerConfig{WorkerCount: 1},
-		pub: fakePublisher{
+		book: SinglePublisherAddressBook(fakePublisher{
 			publishFn: func(e *Message) error {
 				if e.ID == 999 {
 					panic("simulated panic")
@@ -122,7 +122,7 @@ func TestWorker_RecoversFromPanicAndContinues(t *testing.T) {
 				processed <- e.ID
 				return nil
 			},
-		},
+		}),
 	}
 
 	queue := make(chan int64, 2)
@@ -172,9 +172,9 @@ func TestProcessOne_PanicReturnsErrPanic(t *testing.T) {
 		db:        db,
 		logger:    &testLogger,
 		workerCfg: &WorkerConfig{},
-		pub: fakePublisher{
+		book: SinglePublisherAddressBook(fakePublisher{
 			publishFn: func(e *Message) error { panic("boom") },
-		},
+		}),
 	}
 
 	err := o.processOne(ctx, testLogger, 999)
@@ -278,7 +278,7 @@ func TestWorker_HandlesMultipleConsecutivePanics(t *testing.T) {
 	publishCount := 0
 	o := &OutboxRelay{
 		db: db, logger: &testLogger, workerCfg: &WorkerConfig{WorkerCount: 1},
-		pub: fakePublisher{
+		book: SinglePublisherAddressBook(fakePublisher{
 			publishFn: func(e *Message) error {
 				publishCount++
 				if publishCount <= 2 {
@@ -286,7 +286,7 @@ func TestWorker_HandlesMultipleConsecutivePanics(t *testing.T) {
 				}
 				return nil
 			},
-		},
+		}),
 	}
 
 	queue := make(chan int64, 4)
@@ -335,11 +335,11 @@ func TestWorker_DoesNotMarkOnNormalPublishError(t *testing.T) {
 
 	o := &OutboxRelay{
 		db: db, logger: &testLogger, workerCfg: &WorkerConfig{WorkerCount: 1},
-		pub: fakePublisher{
+		book: SinglePublisherAddressBook(fakePublisher{
 			publishFn: func(e *Message) error {
 				return fmt.Errorf("simulated publish error (NOT a panic)")
 			},
-		},
+		}),
 	}
 
 	queue := make(chan int64, 1)
@@ -386,12 +386,12 @@ func TestWorker_PanicsBoundedByRetryLimit(t *testing.T) {
 	publishCount := 0
 	o := &OutboxRelay{
 		db: db, logger: &testLogger, workerCfg: &WorkerConfig{WorkerCount: 1},
-		pub: fakePublisher{
+		book: SinglePublisherAddressBook(fakePublisher{
 			publishFn: func(e *Message) error {
 				publishCount++
 				panic("always panic")
 			},
-		},
+		}),
 	}
 
 	queue := make(chan int64, 5)

@@ -191,14 +191,20 @@ func buildOptsFromYAML(ctx context.Context, cfg *yamlConfig) ([]AddressBookOptio
 			continue
 		}
 
-		rawConfig, err := marshalConfigNode(p.Config)
-		if err != nil {
-			instantiationErrors = append(instantiationErrors,
-				fmt.Errorf("publisher %q: marshal config block: %w", p.Name, err))
-			continue
+		// Build a decoder closure over the parsed yaml.Node. The plugin's
+		// factory calls decode(&cfg) once into its plugin-specific Config
+		// struct; no re-serialisation through bytes.
+		configNode := p.Config // capture in this iteration's scope
+		decode := func(v any) error {
+			if configNode.Kind == 0 {
+				// `config:` block omitted entirely. Leave dest at zero
+				// value — same behaviour as decoding an empty document.
+				return nil
+			}
+			return configNode.Decode(v)
 		}
 
-		pub, err := factory(ctx, rawConfig)
+		pub, err := factory(ctx, decode)
 		if err != nil {
 			instantiationErrors = append(instantiationErrors,
 				fmt.Errorf("publisher %q (plugin %s): %w", p.Name, p.Plugin, err))
@@ -215,17 +221,3 @@ func buildOptsFromYAML(ctx context.Context, cfg *yamlConfig) ([]AddressBookOptio
 	return opts, instantiationErrors
 }
 
-// marshalConfigNode serializes a yaml.Node back to bytes so it can be
-// handed to a plugin factory. A zero-valued node (the `config:` key was
-// omitted entirely) marshals to "null\n", which yaml-unmarshalling into
-// a struct produces the zero value — exactly what a missing-config
-// path expects.
-func marshalConfigNode(node yaml.Node) ([]byte, error) {
-	if node.Kind == 0 {
-		// Zero-valued node: caller-side config block was omitted. Return
-		// empty bytes; the plugin's factory will unmarshal into a
-		// zero-valued Config struct.
-		return []byte{}, nil
-	}
-	return yaml.Marshal(&node)
-}

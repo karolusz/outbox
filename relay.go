@@ -1,12 +1,10 @@
-// Package outbox is responsible for implementing the Outbox Pattern.
-// The package:
-// - Defines the Message model (the canonical struct your service uses for events).
-// - Defines interfaces for persistence (Repository) and publishing (Publisher).
-// - Implements the Relay (the background processor that moves events from persistance layer → publishing service).
-// - Contains any shared constants/enums for statuses.
+// Package outbox implements the Transactional Outbox pattern: events are
+// persisted in the same transaction as the domain write that produces
+// them, and a separate relay process publishes them at-least-once to a
+// broker.
 //
-// Relay is not responsible for creating/saving events to the outbox table.
-// Other services should use the repo to EventOutBox repo directly.
+// This file defines the relay engine and the Publisher contract every
+// broker plugin satisfies.
 package outbox
 
 import (
@@ -21,11 +19,11 @@ import (
 // Publisher is the contract every broker plugin satisfies.
 //
 // Publish is called by the relay's worker for each row. target is the
-// broker-specific destination name (e.g. a Pub/Sub topic) — in v0.2+ it is
-// resolved from msg.Address by the address book, and in v0.1-compatible
-// setups it equals msg.Address. msg is the full row for context (payload,
-// ordering key, attributes, id). Implementations MUST be safe for
-// concurrent calls — multiple workers share the same Publisher instance.
+// broker-specific destination name (e.g. a Pub/Sub topic) resolved by the
+// address book from msg.Address. msg is the full row for context
+// (payload, ordering key, attributes, id). Implementations MUST be safe
+// for concurrent calls — multiple workers share the same Publisher
+// instance.
 //
 // Close releases any resources the publisher holds (broker connections,
 // background batching goroutines, etc.). Called once at relay shutdown.
@@ -34,6 +32,29 @@ type Publisher interface {
 	Publish(ctx context.Context, target string, msg *Message) error
 	Close(ctx context.Context) error
 }
+
+// Metrics is the relay's optional observability hook. Adopters wire it to
+// whatever metrics stack they use (Prometheus, OpenTelemetry, expvar);
+// the lib stays metrics-agnostic. A noop default is used when no Metrics
+// is set via SetMetrics.
+//
+// New methods will be added to this interface as new metrics are wired
+// into the relay. While the lib is at v0.x, adopters implementing Metrics
+// should expect breaking additions; embed a noopMetrics into custom
+// implementations to receive default no-op behaviour for newly-added
+// methods.
+type Metrics interface {
+	// IncUnknownAddress is called when the worker resolves a row whose
+	// Address is not registered in the address book. The address string
+	// is passed so adopters can label / partition the metric.
+	IncUnknownAddress(address string)
+}
+
+// noopMetrics is the default Metrics implementation. Drops every event
+// on the floor. Adopters who don't care about metrics get this for free.
+type noopMetrics struct{}
+
+func (noopMetrics) IncUnknownAddress(address string) {}
 
 type WorkerConfig struct {
 	WorkerCount       int           // number of worker goroutines
@@ -48,12 +69,20 @@ type OutboxRelay struct {
 	db        *sqlx.DB
 	dbSchema  string
 	logger    *zerolog.Logger
-	pub       Publisher
+	book      *AddressBook
+	metrics   Metrics
 	workerCfg *WorkerConfig
 }
 
-func NewOutboxRelay(db *sqlx.DB, logger *zerolog.Logger, pub Publisher, workerConfig *WorkerConfig) OutboxRelay {
-	// use default config if none provided
+// NewOutboxRelay constructs the relay with the given DB, logger, address
+// book, and worker config. Metrics default to a no-op implementation;
+// override via SetMetrics if you want them wired to your observability
+// stack.
+//
+// The book must be non-nil. Adopters with a single publisher who want
+// v0.1-style "address = broker target" semantics should pass
+// SinglePublisherAddressBook(pub).
+func NewOutboxRelay(db *sqlx.DB, logger *zerolog.Logger, book *AddressBook, workerConfig *WorkerConfig) OutboxRelay {
 	if workerConfig == nil {
 		workerConfig = &WorkerConfig{
 			WorkerCount:       8,
@@ -66,9 +95,20 @@ func NewOutboxRelay(db *sqlx.DB, logger *zerolog.Logger, pub Publisher, workerCo
 	return OutboxRelay{
 		db:        db,
 		logger:    logger,
-		pub:       pub,
+		book:      book,
+		metrics:   noopMetrics{},
 		workerCfg: workerConfig,
 	}
+}
+
+// SetMetrics installs a Metrics implementation for the relay. Call before
+// Start. Passing nil restores the default no-op metrics.
+func (o *OutboxRelay) SetMetrics(m Metrics) {
+	if m == nil {
+		o.metrics = noopMetrics{}
+		return
+	}
+	o.metrics = m
 }
 
 // Start runs the relay.

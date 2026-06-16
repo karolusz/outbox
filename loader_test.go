@@ -5,6 +5,7 @@ package outbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -27,19 +28,22 @@ func loaderTestSetup(t *testing.T) {
 	// Register a no-op "fake" factory and a "gcppubsub" factory that
 	// validates the config has a project. These cover the loader-test
 	// scenarios without depending on the real plugin packages.
-	RegisterPlugin("fake", func(ctx context.Context, raw []byte) (Publisher, error) {
+	RegisterPlugin("fake", func(ctx context.Context, decode ConfigDecoder) (Publisher, error) {
 		return loaderTestPublisher{name: "fake"}, nil
 	})
-	RegisterPlugin("gcppubsub", func(ctx context.Context, raw []byte) (Publisher, error) {
-		// Look for "project:" in the raw bytes — minimal validation that
-		// matches what the real plugin does at the boundary.
-		if len(raw) == 0 {
+	RegisterPlugin("gcppubsub", func(ctx context.Context, decode ConfigDecoder) (Publisher, error) {
+		// Decode into a struct that mirrors the real plugin's minimal
+		// requirement — Project must be present. Confirms the decoder
+		// closure reaches plugin code with the right node attached.
+		var cfg struct {
+			Project string `yaml:"project"`
+		}
+		if err := decode(&cfg); err != nil {
+			return nil, fmt.Errorf("gcppubsub: parse config: %w", err)
+		}
+		if cfg.Project == "" {
 			return nil, errors.New("gcppubsub: project is required")
 		}
-		// We don't actually parse YAML here; just confirm bytes were
-		// passed through. For tests that need real parsing, use the
-		// real publisher/gcppubsub package and verify in the
-		// blankimporttest package.
 		return loaderTestPublisher{name: "gcppubsub"}, nil
 	})
 	t.Cleanup(resetPluginRegistry)
