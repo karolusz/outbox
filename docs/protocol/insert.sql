@@ -1,0 +1,51 @@
+-- Reference INSERT for the outbox table.
+-- Run inside the same transaction as your domain write.
+--
+-- Six bind parameters. Column order matches the lib's own producer SDK
+-- (api.go). Drivers in every language can execute this directly.
+--
+-- ----------------------------------------------------------------------------
+-- Bindings by language / driver:
+--
+--   Go (database/sql, sqlx)     : $1..$6 positional
+--   Python (psycopg)            : %s positional  -- or %(event_id)s named
+--   Python (SQLAlchemy text())  : :event_id, :address, :data, :headers,
+--                                 :ordering_key, :retry_limit
+--   Node (node-postgres)        : $1..$6 positional
+--   Node (knex / Prisma)        : library-specific; the column list above
+--                                 is what the underlying driver receives
+--   Java (JDBC)                 : ? positional
+-- ----------------------------------------------------------------------------
+-- Parameter notes:
+--
+--   $1 event_id     (UUID string, e.g. "0192d50f-...")
+--                   Pass a UUIDv7 string for time-ordered IDs (recommended).
+--                   Passing the literal DEFAULT (or NULL with appropriate
+--                   driver semantics) lets the DB generate one via uuidv7().
+--                   Producer-supplied is recommended so you can log/trace
+--                   the ID before the INSERT runs.
+--
+--   $2 address      (TEXT) Logical address the relay resolves via the
+--                   address book. E.g. "payments.completed.v1".
+--
+--   $3 data         (BYTEA) Opaque payload bytes. Encode CloudEvents,
+--                   protobuf, JSON, or anything else here. See
+--                   address-book.md for CloudEvents binding guidance.
+--
+--   $4 headers      (JSONB) Key/value metadata that travels to the broker.
+--                   Pass a JSON object string from your language's JSON
+--                   serializer. Empty object '{}' is fine.
+--
+--   $5 ordering_key (TEXT) Broker-level ordering hint. Empty string for
+--                   "no preference". Maps to Pub/Sub OrderingKey, Kafka
+--                   partition key, NATS subject hash, etc.
+--
+--   $6 retry_limit  (INT) Per-row cap on retry attempts. Default 5 is
+--                   sensible for most messages. Override for events that
+--                   tolerate more retries (or fewer).
+-- ----------------------------------------------------------------------------
+
+INSERT INTO outbox.messages
+    (event_id, address, data, headers, ordering_key, retry_limit)
+VALUES
+    ($1, $2, $3, $4, $5, $6);

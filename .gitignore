@@ -27,6 +27,8 @@ coverage.txt
 *.local
 
 # Private planning docs (research, design, IMPL/ADR notes) — kept local only,
-# not pushed to remote. The README links to public-facing material; anything
-# strategy-ish lives under docs/ and is git-ignored by intent.
-/docs/
+# not pushed to remote. Strategy-ish material lives in subdirs and is
+# ignored by intent. The exception is /docs/protocol/, which is the
+# polyglot-facing schema + YAML format reference and MUST be in-repo.
+/docs/*
+!/docs/protocol/

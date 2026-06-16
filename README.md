@@ -1,8 +1,8 @@
 # outbox
 
-A transactional outbox for Go services on Postgres.
+A transactional outbox for Postgres. Run the relay as a sidecar to any service that talks to Postgres — Python, TypeScript, Go, anything.
 
-**Status**: v0.x — early-stage. API will continue to change before v1.
+**Status**: v0.x. API and schema are stabilising for v1; expect breaking changes between v0.x releases.
 
 ## What it does
 
@@ -10,132 +10,109 @@ Persists events in the same transaction as your domain writes, then a separate r
 
 The pattern: [Transactional Outbox](https://microservices.io/patterns/data/transactional-outbox.html).
 
-## Packages
+The library ships two things:
 
-The library is intentionally split so producers pull in only the dependencies they actually use.
+1. **The relay** — a Go binary that polls the outbox table and publishes rows to a broker via a pluggable publisher (GCP Pub/Sub today; adopters can author their own). This is the headline artifact. Run it as a sidecar to your service.
+2. **A Go producer SDK** (`outbox.Send`, etc.) — a convenience layer for services written in Go. Polyglot adopters don't need it; the producer-side integration is a 20-line raw SQL helper in any language.
 
-| Package | Use it for | Third-party deps it adds |
-|---|---|---|
-| `github.com/karolusz/outbox` | Producer API (`Send`, `SendBatch`), `Message`, `AddressBook` value type | none — stdlib only |
-| `github.com/karolusz/outbox/publisher` | `Publisher` interface + plugin registry. Plugin authors import only this. | none — stdlib only |
-| `github.com/karolusz/outbox/yamlconfig` | YAML loaders: `LoadAddressBook`, `LoadAddressBookValidateOnly` | `gopkg.in/yaml.v3` |
-| `github.com/karolusz/outbox/relay` | The relay engine: poll, claim, dispatch, mark | `sqlx`, `zerolog`, `lib/pq` (transitive) |
-| `github.com/karolusz/outbox/outboxsqlx` | Thin `TxWriter` adapter for `*sqlx.Tx` | `sqlx` |
-| `github.com/karolusz/outbox/publisher/gcppubsub` | GCP Pub/Sub plugin | GCP SDK |
-| `github.com/karolusz/outbox/publisher/fake` | In-memory plugin for tests | none |
+Polyglot adopters interact with two things and only two things:
 
-A producer that does `import "github.com/karolusz/outbox"` for `Send` inherits **zero third-party deps**. Verified by:
+- **The table schema** ([`docs/protocol/schema.md`](./docs/protocol/schema.md)) — what columns exist, what the relay sets, what the producer sets.
+- **The address book YAML** ([`docs/protocol/address-book.md`](./docs/protocol/address-book.md)) — how the relay maps logical addresses to broker targets.
 
-```sh
-go list -deps github.com/karolusz/outbox | grep -E '^[a-z0-9-]+\.[a-z]'
-# (empty)
+## Requirements
+
+- **Postgres 18+**. The schema uses the built-in `uuidv7()` function. Older PG versions need a fork of the migration.
+- **Go 1.26+** (for building the relay binary or using the Go SDK).
+
+## Quick start: any service, any language
+
+### 1. Apply the schema migration
+
+[`migrations/20260616120000_initial.up.sql`](./migrations/20260616120000_initial.up.sql) — apply it once to your Postgres with any migration runner. Creates the `outbox` schema and the `outbox.messages` table.
+
+### 2. Write to the outbox table inside your domain transaction
+
+Reference INSERT: [`docs/protocol/insert.sql`](./docs/protocol/insert.sql). Six bind parameters: `event_id`, `address`, `data`, `headers`, `ordering_key`, `retry_limit`.
+
+#### Python (psycopg)
+
+Working example: [`docs/protocol/examples/python/insert.py`](./docs/protocol/examples/python/insert.py). The integration is:
+
+```python
+INSERT_SQL = """
+INSERT INTO outbox.messages (event_id, address, data, headers, ordering_key, retry_limit)
+VALUES (%s, %s, %s, %s, %s, %s)
+"""
+
+with conn.transaction():
+    # Your domain write inside the same tx:
+    conn.execute("UPDATE payments SET status = 'completed' WHERE id = %s", (payment_id,))
+
+    # Outbox row:
+    conn.execute(INSERT_SQL, (
+        str(uuid7()),                                      # event_id (UUIDv7)
+        "payments.completed.v1",                           # address
+        payload_bytes,                                     # data
+        json.dumps({"content-type": "application/json"}),  # headers
+        payment_id,                                        # ordering_key
+        5,                                                 # retry_limit
+    ))
 ```
 
-## Roles and import sets
+#### TypeScript (node-postgres)
 
-### Producer
+Working example: [`docs/protocol/examples/typescript/insert.ts`](./docs/protocol/examples/typescript/insert.ts). Same shape, TS syntax.
 
-Writes events in its own DB transaction. Does not run a relay, does not need to know about brokers.
+#### Go (with the SDK)
 
 ```go
 import (
     "github.com/karolusz/outbox"
-    "github.com/karolusz/outbox/outboxsqlx" // or write a small TxWriter for another driver
+    "github.com/karolusz/outbox/outboxsqlx"
+    "github.com/karolusz/outbox/publisher"
 )
 
 err := outboxsqlx.Send(ctx, tx, outbox.Message{
-    Data:        payload,
     Address:     "payments.completed.v1",
+    Data:        payload,
+    Headers:     publisher.JSONBMap{"content-type": "application/json"},
     OrderingKey: paymentID.String(),
-    EventType:   "PaymentSucceeded",
     RetryLimit:  5,
 })
 ```
 
-Producer dep closure: stdlib + sqlx (only because outboxsqlx uses it). No yaml, no zerolog, no broker SDKs.
+The SDK fills in `EventID` with a fresh UUIDv7 if you don't supply one.
 
-### Producer with address validation (optional)
+### 3. Run the relay as a sidecar
 
-A producer that wants to reject unknown addresses at API boundaries — before they even reach Postgres — loads the address book in validate-only mode:
+The lib ships a reference binary: [`cmd/outbox-relay`](./cmd/outbox-relay).
 
-```go
-import (
-    "github.com/karolusz/outbox"
-    "github.com/karolusz/outbox/yamlconfig"
-)
+```sh
+# Docker:
+docker build -t outbox-relay:dev .
+docker run --rm \
+  -e DB_CONNECTION_STRING="postgres://outbox:outbox@db:5432/outbox" \
+  -v $(pwd)/addressbook.yaml:/etc/outbox/addressbook.yaml \
+  outbox-relay:dev
 
-book, _ := yamlconfig.LoadAddressBookValidateOnly("outbox.addressbook.yaml")
-// at API boundary:
-if err := book.Validate(addr); err != nil {
-    return fmt.Errorf("unknown outbox address: %w", err)
-}
-// then construct and Send the Message as usual.
+# Or built directly:
+go install github.com/karolusz/outbox/cmd/outbox-relay@latest
+DB_CONNECTION_STRING=postgres://... outbox-relay --addressbook=addressbook.yaml
 ```
 
-Adds `yaml.v3` and nothing else. The publisher returned by `Resolve` is a stub that errors on `Publish` (intentional — validate-only books cannot deliver).
+Flags:
 
-### Relay operator
+- `--addressbook` — path to the YAML address book (default `/etc/outbox/addressbook.yaml`).
+- `--db-env` — env var name holding the connection string (default `DB_CONNECTION_STRING`).
+- `--schema` — Postgres schema (default `outbox`).
+- `--log-level` — `trace|debug|info|warn|error` (default `info`).
 
-A separate binary (or a goroutine inside the producer's binary) that polls the table and dispatches:
+The binary handles `SIGINT` and `SIGTERM` cleanly: stops accepting new claims, finishes in-flight publishes, exits.
 
-```go
-import (
-    "github.com/karolusz/outbox"
-    "github.com/karolusz/outbox/relay"
-    "github.com/karolusz/outbox/yamlconfig"
+### 4. Write your address book
 
-    _ "github.com/karolusz/outbox/publisher/gcppubsub"
-    // _ "company.com/internal/outbox-kafka-plugin"  // your custom plugin
-)
-
-book, _ := yamlconfig.LoadAddressBook(ctx, "outbox.addressbook.yaml")
-r := relay.New(db, &logger, book, nil)
-<-r.Start(ctx, nil)
-```
-
-Plugins register themselves via blank-import (`database/sql.Register`-style). Custom plugins live in the adopter's own module — no fork of this library needed.
-
-## Writing a custom plugin
-
-```go
-package mykafka
-
-import (
-    "context"
-
-    "github.com/karolusz/outbox/publisher"
-)
-
-type Publisher struct { /* ... */ }
-
-func (p *Publisher) Publish(ctx context.Context, target string, msg *publisher.Message) error { /* ... */ }
-func (p *Publisher) Close(ctx context.Context) error                                          { /* ... */ }
-
-type Config struct {
-    Brokers []string `yaml:"brokers"`
-}
-
-func init() {
-    publisher.Register("mykafka", func(ctx context.Context, decode publisher.ConfigDecoder) (publisher.Publisher, error) {
-        var cfg Config
-        if err := decode(&cfg); err != nil {
-            return nil, err
-        }
-        // construct and return a Publisher
-        return New(cfg)
-    })
-}
-```
-
-Adopters use it by blank-importing the package alongside the lib-shipped ones:
-
-```go
-import _ "company.com/internal/mykafka"
-```
-
-## Address book
-
-The address book is a routing table: producer-visible logical address → (Publisher, broker target). YAML format:
+Minimal example:
 
 ```yaml
 version: 1
@@ -149,49 +126,84 @@ publishers:
 addresses:
   - name: payments.completed.v1
     publisher: pubsub-prod
-    target: payments-topic
-  - name: mandates.created.v1
-    publisher: pubsub-prod
-    target: mandates-topic
+    target: payments-prod-topic
 ```
 
-The same file is loaded by:
+Full spec: [`docs/protocol/address-book.md`](./docs/protocol/address-book.md).
 
-- the relay binary (with `yamlconfig.LoadAddressBook` — instantiates plugins),
-- producers that want pre-validation (with `yamlconfig.LoadAddressBookValidateOnly` — skips plugin instantiation, no broker SDKs needed).
+## Custom plugins
 
-Adopters who need to inject a publisher that YAML cannot describe (e.g. Vault-fetched credentials) construct it in Go and pass it as an option:
+A polyglot adopter who needs a broker we don't ship (Kafka, NATS, internal bus) writes a small Go module implementing `publisher.Publisher`, then builds their own relay binary that blank-imports it:
 
 ```go
-book, err := yamlconfig.LoadAddressBook(ctx, "outbox.addressbook.yaml",
-    outbox.WithPublisher("vault-creds", customPublisher),
-    outbox.WithRoute("special.event.v1", outbox.Route{Publisher: "vault-creds", Target: "topic-x"}),
+package main
+
+import (
+    _ "github.com/karolusz/outbox/publisher/gcppubsub"
+    _ "company.com/internal/outbox-kafka-plugin"  // custom plugin
+
+    // ... rest of the standard relay main
 )
 ```
 
+See [`cmd/outbox-relay/main.go`](./cmd/outbox-relay/main.go) for the reference main to fork.
+
+## Go SDK package layout
+
+For Go adopters who use the SDK, the library is intentionally split so producers pull in only the dependencies they actually use:
+
+| Package | Use it for | Third-party deps it adds |
+|---|---|---|
+| `github.com/karolusz/outbox` | Producer API (`Send`, `SendBatch`), `Message`, `AddressBook` value type | none — stdlib only |
+| `github.com/karolusz/outbox/publisher` | `Publisher` interface, `Message`, plugin registry, `NewEventID()` | none — stdlib only |
+| `github.com/karolusz/outbox/yamlconfig` | YAML loaders | `gopkg.in/yaml.v3` |
+| `github.com/karolusz/outbox/relay` | Relay engine | `sqlx`, `zerolog`, `lib/pq` (transitive) |
+| `github.com/karolusz/outbox/outboxsqlx` | `*sqlx.Tx` adapter | `sqlx` |
+| `github.com/karolusz/outbox/publisher/gcppubsub` | GCP Pub/Sub plugin | GCP SDK |
+| `github.com/karolusz/outbox/publisher/fake` | In-memory plugin for tests | none |
+
+A producer that does `import "github.com/karolusz/outbox"` for `Send` inherits **zero third-party deps**. Verified by:
+
+```sh
+make check-producer-deps
+```
+
+## Address validation in producers (optional)
+
+Producers (Go or otherwise) that want to reject unknown addresses at API boundaries — before the row even hits Postgres — load the address book in validate-only mode. The Go SDK has a helper:
+
+```go
+import "github.com/karolusz/outbox/yamlconfig"
+
+book, _ := yamlconfig.LoadAddressBookValidateOnly("outbox.addressbook.yaml")
+if err := book.Validate(addr); err != nil {
+    return fmt.Errorf("unknown outbox address: %w", err)
+}
+```
+
+Polyglot adopters parse the YAML themselves with their language's YAML library and check the address against the list. The format is small.
+
 ## What v0.x is and isn't
 
-This is an early-stage codebase, still finding its public shape.
-
-- `Publisher` interface is `Publish(ctx, target, *Message) + Close(ctx)`. No permanent-error discrimination yet; every error is retried until `retry_limit`.
-- Schema is the one originally shipped (`outbox_events` table). Renames and structural changes are deferred to a migration tool (planned).
+- `Publisher` interface is `Publish(ctx, target, *Message) + Close(ctx)`. No permanent-error discrimination yet — every error is retried until `retry_limit`.
 - Polling-only. No `LISTEN/NOTIFY`, no CDC.
 - Single-replica relay assumed. No leader election yet.
+- Rows are deleted immediately on broker ack (no "published" state retention). May change in v0.4+ if audit visibility is a real adopter need.
 
-Expect breaking changes between v0.x releases. v1 lands when the producer surface and plugin contract have been used by more than one real adopter.
+Expect breaking changes between v0.x releases. v1.0.0 lands when the schema and YAML format have been validated by adopters in production.
 
 ## Running tests
 
-The integration tests require a running Postgres with the lib's schema applied. A `docker-compose.yml` and `Makefile` provide a one-command setup.
+The integration tests require a running Postgres with the lib's schema applied. The lib ships a `docker-compose.yml` and `Makefile`:
 
 ```sh
-make test-up       # start a local Postgres with the v0 schema applied
-make test          # run the full suite against it
+make test-up       # start a local PG 18 with the schema applied
+make test          # run the full suite
 make test-down     # stop the container (keeps the volume; fast restart later)
 make test-clean    # stop and wipe the volume (fresh schema next time)
 ```
 
-The compose stack uses port `5434` so it does not collide with other Postgres instances on the host. The connection string defaults to `postgres://outbox:outbox@localhost:5434/outbox?sslmode=disable`; override it by exporting `DB_CONNECTION_STRING` before invoking `make test` (or `go test` directly).
+The compose stack uses port `5434` so it does not collide with other Postgres instances on the host. Override `DB_CONNECTION_STRING` for non-default setups.
 
 Unit-only subset (no DB needed):
 
