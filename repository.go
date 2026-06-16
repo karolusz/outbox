@@ -73,6 +73,23 @@ func incrementRetryCount(tx *sqlx.Tx, id int64) error {
 	return err
 }
 
+// setLastAttemptedAt updates last_attempted_at to NOW() WITHOUT touching
+// retry_count. Used by the relay when it picks up a row whose address is
+// not registered in the address book: the row stays available (retry_count
+// is preserved, so it never hits the limit and never gets filtered out of
+// polling), but is throttled out of the worker's next pass by the leeway
+// window. Once the relay redeploys with a complete address book, the row
+// publishes normally.
+//
+// CRITICAL invariant: this MUST NOT increment retry_count. If it did,
+// unknown-address rows would eventually hit retry_limit and become
+// invisible to polling — silent data loss exactly when an operator
+// would want to recover them by adding the missing address.
+func setLastAttemptedAt(tx *sqlx.Tx, id int64) error {
+	_, err := tx.Exec(`UPDATE outbox_events SET last_attempted_at = NOW() WHERE id = $1`, id)
+	return err
+}
+
 // tryIncrementRetryCount increments retry_count and last_attempted_at for the
 // row, but only if both:
 //   - the row is NOT currently locked by another transaction, AND

@@ -149,9 +149,32 @@ func (o *OutboxRelay) processOne(ctx context.Context, logger zerolog.Logger, id 
 	attemptNum := outboxEvent.RetryCount + 1
 	logger = logger.With().Int("attempt", attemptNum).Int64("event_id", outboxEvent.ID).Logger()
 
-	// In v0.1, target equals the logical address. v0.2 will resolve via the
-	// address book here.
-	if publishErr := o.pub.Publish(ctx, outboxEvent.Address, outboxEvent); publishErr != nil {
+	// Resolve the logical address to (Publisher, broker target). On
+	// ErrUnknownAddress: bump last_attempted_at so the row is throttled
+	// out of the next worker tick, but do NOT touch retry_count — that
+	// would eventually push the row past retry_limit and make it
+	// invisible to polling, losing the data when the relay later learns
+	// the address. See setLastAttemptedAt in repository.go.
+	publisher, target, resolveErr := o.book.Resolve(outboxEvent.Address)
+	if errors.Is(resolveErr, ErrUnknownAddress) {
+		logger.Error().Str("address", outboxEvent.Address).Msg("unknown address; preserving row for retry once address book is updated")
+		o.metrics.IncUnknownAddress(outboxEvent.Address)
+		if updateErr := setLastAttemptedAt(tx, outboxEvent.ID); updateErr != nil {
+			return fmt.Errorf("set last_attempted_at for unknown-address row: %w", updateErr)
+		}
+		if commitErr := tx.Commit(); commitErr != nil {
+			return fmt.Errorf("commit last_attempted_at for unknown-address row: %w", commitErr)
+		}
+		return nil
+	}
+	if resolveErr != nil {
+		// Some other resolve failure (e.g. defensive: route references
+		// missing publisher). Treat as a publish-class failure — let
+		// the same retry path handle it.
+		return fmt.Errorf("resolve address %q: %w", outboxEvent.Address, resolveErr)
+	}
+
+	if publishErr := publisher.Publish(ctx, target, outboxEvent); publishErr != nil {
 		logger.Debug().Err(publishErr).Msg("failed to publish outbox event")
 		outboxEvent.RetryCount++
 		if updateErr := incrementRetryCount(tx, outboxEvent.ID); updateErr != nil {

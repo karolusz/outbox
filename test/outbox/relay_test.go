@@ -63,7 +63,7 @@ func setupTest(
 	pub.FailedChan = failedChan
 	pub.ForceErrorFn = forceErrorFn
 
-	relay := outbox.NewOutboxRelay(sqlDB, &logger, pub, workerConfig)
+	relay := outbox.NewOutboxRelay(sqlDB, &logger, outbox.SinglePublisherAddressBook(pub), workerConfig)
 	t.Cleanup(func() { teardownTest(t, sqlDB, testName) })
 	return &relay, pub, sqlDB
 }
