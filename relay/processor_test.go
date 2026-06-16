@@ -11,7 +11,6 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	"github.com/karolusz/outbox/internal/testutils"
-	"github.com/karolusz/outbox/testdata"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,9 +40,9 @@ func setupTest(
 	logger := testutils.NewTestLogger(t)
 
 	if seedSQLFile != "" {
-		seedSQLFile = "sql/" + seedSQLFile
+		seedSQLFile = "testdata/sql/" + seedSQLFile
 	}
-	testutils.SeedTables(t, sqlDB.DB, testdata.SQLFiles, seedSQLFile)
+	testutils.SeedTables(t, sqlDB.DB, sqlFixtures, seedSQLFile)
 	t.Cleanup(func() { teardownTest(t, sqlDB, testName) })
 	return sqlDB, logger
 }
