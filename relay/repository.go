@@ -1,12 +1,14 @@
 // A repository like methods for internal use by the outbox relay worker.
 // This would be the repo layer in layered architecture but it was deemed unnecessary
 // to create a separate package for just this for the outbox.
-package outbox
+package relay
 
 import (
 	"database/sql"
 
 	"github.com/jmoiron/sqlx"
+
+	"github.com/karolusz/outbox/publisher"
 )
 
 // Selector is an interface that abstracts the Select method for querying the database.
@@ -40,8 +42,8 @@ func getAllPendingEventIDs(s Selector, limit int, leewayDurationSec int) ([]int6
 // the provided transaction. SELECTs explicit columns rather than *, so the
 // presence of additional adopter-side columns
 // does not break the scan.
-func getEventByIDIfNotLocked(tx *sqlx.Tx, id int64) (*Message, error) {
-	var event Message
+func getEventByIDIfNotLocked(tx *sqlx.Tx, id int64) (*publisher.Message, error) {
+	var event publisher.Message
 	err := tx.Get(&event, `
 		SELECT id, data, attributes, topic, ordering_key, event_type,
 		       retry_count, retry_limit, created_at, last_attempted_at

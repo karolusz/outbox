@@ -1,6 +1,6 @@
 //go:build testing
 
-package outbox
+package relay
 
 import (
 	"bytes"
@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/karolusz/outbox/internal/testutils"
 	"github.com/karolusz/outbox/testdata"
-	"github.com/jmoiron/sqlx"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,7 +66,7 @@ func TestEventProcessor_CanEnqueueIDs(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	o := &OutboxRelay{
+	o := &Relay{
 		db:     db,
 		logger: &testLogger,
 		workerCfg: &WorkerConfig{
@@ -111,7 +111,7 @@ func TestEventProcessor_QueueFullSkipsEnqueue(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := zerolog.New(&logBuf).Level(zerolog.DebugLevel).With().Timestamp().Logger()
 
-	o := &OutboxRelay{
+	o := &Relay{
 		logger: &logger,
 		db:     db,
 		workerCfg: &WorkerConfig{

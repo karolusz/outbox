@@ -18,7 +18,9 @@ import (
 
 	"github.com/karolusz/outbox"
 	"github.com/karolusz/outbox/internal/testutils"
+	"github.com/karolusz/outbox/publisher"
 	"github.com/karolusz/outbox/publisher/fake"
+	"github.com/karolusz/outbox/relay"
 )
 
 const (
@@ -38,9 +40,9 @@ func setupTest(
 	t *testing.T,
 	testName string,
 	seedSQLFile string,
-	workerConfig *outbox.WorkerConfig,
-	forceErrorFn func(msg *outbox.Message) error,
-) (*outbox.OutboxRelay, *fake.Publisher, *sqlx.DB) {
+	workerConfig *relay.WorkerConfig,
+	forceErrorFn func(msg *publisher.Message) error,
+) (*relay.Relay, *fake.Publisher, *sqlx.DB) {
 	sqlDB, cleanup, err := testutils.NewTestDB(DBConnStr, testName, MaxPoolConnections, MaxIdleConnections)
 	if err != nil {
 		t.Fatalf("failed to create test database: %v", err)
@@ -53,8 +55,8 @@ func setupTest(
 	}
 	testutils.SeedTables(t, sqlDB.DB, SQLFiles, seedSQLFile)
 
-	successChan := make(chan *outbox.Message, 100)
-	failedChan := make(chan *outbox.Message, 100)
+	successChan := make(chan *publisher.Message, 100)
+	failedChan := make(chan *publisher.Message, 100)
 	t.Cleanup(func() { close(successChan); close(failedChan) })
 
 	pub := fake.New()
@@ -63,9 +65,9 @@ func setupTest(
 	pub.FailedChan = failedChan
 	pub.ForceErrorFn = forceErrorFn
 
-	relay := outbox.NewOutboxRelay(sqlDB, &logger, outbox.SinglePublisherAddressBook(pub), workerConfig)
+	r := relay.New(sqlDB, &logger, outbox.SinglePublisherAddressBook(pub), workerConfig)
 	t.Cleanup(func() { teardownTest(t, sqlDB, testName) })
-	return &relay, pub, sqlDB
+	return &r, pub, sqlDB
 }
 
 func teardownTest(t *testing.T, db *sqlx.DB, schema string) {
@@ -80,7 +82,7 @@ func teardownTest(t *testing.T, db *sqlx.DB, schema string) {
 func TestOutbox_EmitsEventsFromOutboxTable(t *testing.T) {
 	seedSQLFile := "emitseventsfromoutboxtable.sql"
 
-	workerConfig := &outbox.WorkerConfig{
+	workerConfig := &relay.WorkerConfig{
 		WorkerCount: MaxWorkersCount,
 		QueueSize:   500,
 		BatchSize:   200,
@@ -120,7 +122,7 @@ receiveLoop:
 // TestOutbox_EmitsEventsAsTheyCome confirms the relay picks up new rows
 // inserted while it is already running.
 func TestOutbox_EmitsEventsAsTheyCome(t *testing.T) {
-	workerConfig := &outbox.WorkerConfig{
+	workerConfig := &relay.WorkerConfig{
 		WorkerCount: MaxWorkersCount,
 		QueueSize:   500,
 		BatchSize:   200,
@@ -169,13 +171,13 @@ func insertOutboxEvents(t *testing.T, db *sqlx.DB, count int, totalTime time.Dur
 // TestOutbox_IncrementsRetryCounter confirms the relay increments retry_count
 // on each failed publish attempt until the retry_limit is reached.
 func TestOutbox_IncrementsRetryCounter(t *testing.T) {
-	workerConfig := &outbox.WorkerConfig{
+	workerConfig := &relay.WorkerConfig{
 		WorkerCount: MaxWorkersCount,
 		QueueSize:   500,
 		BatchSize:   200,
 		TickPeriod:  250 * time.Millisecond,
 	}
-	forceErrorFn := func(msg *outbox.Message) error {
+	forceErrorFn := func(msg *publisher.Message) error {
 		return fmt.Errorf("forced error for testing")
 	}
 	relay, pub, db := setupTest(t, "TestOutbox_IncrementsRetryCounter", "emitseventsfromoutboxtable.sql", workerConfig, forceErrorFn)

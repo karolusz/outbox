@@ -1,4 +1,4 @@
-package outbox
+package relay
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 // eventProcessor continuously (every tick) fetches pending outbox event IDs and sends them to the queue for processing.
 // if queue is full, skip and issue warning.
 // if provided will call the heartbeat callback function (hearbeatFn)
-func (o *OutboxRelay) eventProcessor(ctx context.Context, queue chan int64, hearbeatFn func() error) {
+func (o *Relay) eventProcessor(ctx context.Context, queue chan int64, hearbeatFn func() error) {
 	ticker := time.NewTicker(o.workerCfg.TickPeriod)
 	for {
 		select {

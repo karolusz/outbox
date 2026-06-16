@@ -1,4 +1,13 @@
-package outbox
+// Package yamlconfig loads outbox address books from YAML files. It
+// instantiates publishers via the plugin registry exposed by the
+// outbox/publisher package, builds routes, and validates the whole graph
+// through the address book's constructor.
+//
+// Producers that only need to pre-validate addresses (and not publish)
+// should call LoadAddressBookValidateOnly — it parses the YAML but does
+// not touch the plugin registry, so producer binaries do not need any
+// broker SDKs in their dependency closure.
+package yamlconfig
 
 import (
 	"context"
@@ -7,6 +16,9 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/karolusz/outbox"
+	"github.com/karolusz/outbox/publisher"
 )
 
 // yamlConfig is the wire shape of the address-book YAML file. The
@@ -19,8 +31,8 @@ type yamlConfig struct {
 }
 
 // yamlPublisher captures a publisher entry. The Config field is kept as
-// a yaml.Node so we can re-marshal just that block and hand it to the
-// plugin's factory, which decodes it into a plugin-specific Config
+// a yaml.Node so the loader can hand a decoder closure over that node to
+// the plugin's factory, which decodes it into a plugin-specific Config
 // struct without the loader needing to know plugin internals.
 type yamlPublisher struct {
 	Name   string    `yaml:"name"`
@@ -38,21 +50,21 @@ type yamlAddress struct {
 const addressBookSchemaVersion = 1
 
 // LoadAddressBook reads a YAML address-book file, instantiates publishers
-// by looking up their plugin factories in the global registry, builds
-// routes, validates the whole graph, and returns a ready-to-use
-// AddressBook.
+// by looking up their plugin factories in the registry, builds routes,
+// validates the whole graph, and returns a ready-to-use AddressBook.
 //
-// Additional Go-side options (typically WithPublisher / WithRoute) are
-// applied alongside the YAML-derived options. They must use keys disjoint
-// from anything in the YAML — duplicates between YAML and Go opts are
-// reported as errors, same as duplicates within YAML. Adopters who need
-// to inject a publisher that YAML cannot describe (e.g. Vault-fetched
-// credentials) should give it a name that does not appear in the YAML.
+// Additional Go-side options (typically outbox.WithPublisher /
+// outbox.WithRoute) are applied alongside the YAML-derived options. They
+// must use keys disjoint from anything in the YAML — duplicates between
+// YAML and Go opts are reported as errors, same as duplicates within
+// YAML. Adopters who need to inject a publisher that YAML cannot describe
+// (e.g. Vault-fetched credentials) should give it a name that does not
+// appear in the YAML.
 //
 // Plugins must be registered before this is called — adopters typically
 // blank-import the plugin packages. If the YAML references a plugin not
 // in the registry, the error message recommends checking blank imports.
-func LoadAddressBook(ctx context.Context, path string, opts ...AddressBookOption) (*AddressBook, error) {
+func LoadAddressBook(ctx context.Context, path string, opts ...outbox.AddressBookOption) (*outbox.AddressBook, error) {
 	cfg, err := readYAMLConfig(path)
 	if err != nil {
 		return nil, err
@@ -65,11 +77,11 @@ func LoadAddressBook(ctx context.Context, path string, opts ...AddressBookOption
 	// separately because they happen BEFORE the validation phase and
 	// would otherwise be masked by downstream "unregistered publisher"
 	// complaints.
-	allOpts := make([]AddressBookOption, 0, len(yamlOpts)+len(opts))
+	allOpts := make([]outbox.AddressBookOption, 0, len(yamlOpts)+len(opts))
 	allOpts = append(allOpts, yamlOpts...)
 	allOpts = append(allOpts, opts...)
 
-	book, buildErr := NewAddressBook(allOpts...)
+	book, buildErr := outbox.NewAddressBook(allOpts...)
 
 	switch {
 	case len(instantiationErrors) > 0 && buildErr != nil:
@@ -104,13 +116,13 @@ func LoadAddressBook(ctx context.Context, path string, opts ...AddressBookOption
 // Useful in producer binaries that want to validate addresses at API
 // boundaries but do not need to publish themselves — they avoid pulling
 // in transitive dependencies from plugin packages (Pub/Sub SDK, etc.).
-func LoadAddressBookValidateOnly(path string) (*AddressBook, error) {
+func LoadAddressBookValidateOnly(path string) (*outbox.AddressBook, error) {
 	cfg, err := readYAMLConfig(path)
 	if err != nil {
 		return nil, err
 	}
 
-	opts := make([]AddressBookOption, 0, len(cfg.Publishers)+len(cfg.Addresses))
+	opts := make([]outbox.AddressBookOption, 0, len(cfg.Publishers)+len(cfg.Addresses))
 	stub := validateOnlyPublisher{}
 	for _, p := range cfg.Publishers {
 		// Skip blank-name entries — the duplicate-route validation in
@@ -119,13 +131,13 @@ func LoadAddressBookValidateOnly(path string) (*AddressBook, error) {
 		if p.Name == "" {
 			continue
 		}
-		opts = append(opts, WithPublisher(p.Name, stub))
+		opts = append(opts, outbox.WithPublisher(p.Name, stub))
 	}
 	for _, a := range cfg.Addresses {
-		opts = append(opts, WithRoute(a.Name, Route{Publisher: a.Publisher, Target: a.Target}))
+		opts = append(opts, outbox.WithRoute(a.Name, outbox.Route{Publisher: a.Publisher, Target: a.Target}))
 	}
 
-	book, err := NewAddressBook(opts...)
+	book, err := outbox.NewAddressBook(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("address book %s: %w", path, err)
 	}
@@ -137,7 +149,7 @@ func LoadAddressBookValidateOnly(path string) (*AddressBook, error) {
 // tries to deliver through a validate-only book.
 type validateOnlyPublisher struct{}
 
-func (validateOnlyPublisher) Publish(ctx context.Context, target string, msg *Message) error {
+func (validateOnlyPublisher) Publish(ctx context.Context, target string, msg *publisher.Message) error {
 	return errors.New("outbox: this AddressBook was loaded validate-only; Publish is unavailable")
 }
 
@@ -166,12 +178,12 @@ func readYAMLConfig(path string) (*yamlConfig, error) {
 }
 
 // buildOptsFromYAML walks the YAML config, instantiating publishers via
-// the plugin registry and turning addresses into WithRoute options.
+// the plugin registry and turning addresses into outbox.WithRoute options.
 // Instantiation errors are accumulated and returned separately from the
 // opts slice so the caller can decide how to surface them alongside the
 // later validation errors.
-func buildOptsFromYAML(ctx context.Context, cfg *yamlConfig) ([]AddressBookOption, []error) {
-	opts := make([]AddressBookOption, 0, len(cfg.Publishers)+len(cfg.Addresses))
+func buildOptsFromYAML(ctx context.Context, cfg *yamlConfig) ([]outbox.AddressBookOption, []error) {
+	opts := make([]outbox.AddressBookOption, 0, len(cfg.Publishers)+len(cfg.Addresses))
 	var instantiationErrors []error
 
 	for _, p := range cfg.Publishers {
@@ -184,7 +196,7 @@ func buildOptsFromYAML(ctx context.Context, cfg *yamlConfig) ([]AddressBookOptio
 			continue
 		}
 
-		factory, ok := lookupPlugin(p.Plugin)
+		factory, ok := publisher.Lookup(p.Plugin)
 		if !ok {
 			instantiationErrors = append(instantiationErrors,
 				fmt.Errorf("publisher %q references plugin %q which is not registered (did you forget to blank-import the plugin package?)", p.Name, p.Plugin))
@@ -211,13 +223,12 @@ func buildOptsFromYAML(ctx context.Context, cfg *yamlConfig) ([]AddressBookOptio
 			continue
 		}
 
-		opts = append(opts, WithPublisher(p.Name, pub))
+		opts = append(opts, outbox.WithPublisher(p.Name, pub))
 	}
 
 	for _, a := range cfg.Addresses {
-		opts = append(opts, WithRoute(a.Name, Route{Publisher: a.Publisher, Target: a.Target}))
+		opts = append(opts, outbox.WithRoute(a.Name, outbox.Route{Publisher: a.Publisher, Target: a.Target}))
 	}
 
 	return opts, instantiationErrors
 }
-

@@ -3,6 +3,8 @@ package outbox
 import (
 	"errors"
 	"fmt"
+
+	"github.com/karolusz/outbox/publisher"
 )
 
 // Route describes where a logical address gets delivered.
@@ -31,23 +33,23 @@ type Route struct {
 // empty in that mode.
 type AddressBook struct {
 	routes     map[string]Route
-	publishers map[string]Publisher
+	publishers map[string]publisher.Publisher
 
 	// passthrough, when non-nil, makes Resolve return (passthrough, address, nil)
 	// for any address. Set only by SinglePublisherAddressBook.
-	passthrough Publisher
+	passthrough publisher.Publisher
 }
 
 // addressBookConfig is the internal accumulator passed through options.
 // We track duplicate registrations as counts so NewAddressBook can report
 // all of them in a single aggregated error.
 type addressBookConfig struct {
-	routes        map[string]Route
-	publishers    map[string]Publisher
-	routeOrder    []string // for stable error ordering
-	pubOrder      []string
-	routeCount    map[string]int
-	pubCount      map[string]int
+	routes     map[string]Route
+	publishers map[string]publisher.Publisher
+	routeOrder []string // for stable error ordering
+	pubOrder   []string
+	routeCount map[string]int
+	pubCount   map[string]int
 }
 
 // AddressBookOption configures a new AddressBook. Apply via NewAddressBook.
@@ -60,7 +62,7 @@ type AddressBookOption func(*addressBookConfig)
 // to the same broker (e.g. several topics in one GCP project).
 //
 // Duplicate keys are reported as an error by NewAddressBook.
-func WithPublisher(key string, p Publisher) AddressBookOption {
+func WithPublisher(key string, p publisher.Publisher) AddressBookOption {
 	return func(c *addressBookConfig) {
 		if _, seen := c.publishers[key]; !seen {
 			c.pubOrder = append(c.pubOrder, key)
@@ -102,7 +104,7 @@ func WithRoute(address string, route Route) AddressBookOption {
 func NewAddressBook(opts ...AddressBookOption) (*AddressBook, error) {
 	cfg := &addressBookConfig{
 		routes:     make(map[string]Route),
-		publishers: make(map[string]Publisher),
+		publishers: make(map[string]publisher.Publisher),
 		routeCount: make(map[string]int),
 		pubCount:   make(map[string]int),
 	}
@@ -199,7 +201,7 @@ func validateRouteTargets(cfg *addressBookConfig) []error {
 // In a single-publisher book (see SinglePublisherAddressBook), every
 // address resolves to the configured publisher with target equal to the
 // address. The address is otherwise opaque to the book.
-func (b *AddressBook) Resolve(address string) (Publisher, string, error) {
+func (b *AddressBook) Resolve(address string) (publisher.Publisher, string, error) {
 	if b.passthrough != nil {
 		return b.passthrough, address, nil
 	}
@@ -249,6 +251,6 @@ func (b *AddressBook) Validate(address string) error {
 // verbatim. For new setups, prefer NewAddressBook or LoadAddressBook so
 // addresses and targets are explicitly mapped — that decoupling is the
 // whole point of the address book.
-func SinglePublisherAddressBook(p Publisher) *AddressBook {
+func SinglePublisherAddressBook(p publisher.Publisher) *AddressBook {
 	return &AddressBook{passthrough: p}
 }
