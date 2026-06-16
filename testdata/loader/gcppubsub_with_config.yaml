@@ -1,0 +1,17 @@
+version: 1
+
+publishers:
+  - name: gcp-prod
+    plugin: gcppubsub
+    config:
+      project: anyfin-prod
+      enable_message_ordering: true
+      publish_timeout: 5s
+      credentials:
+        type: file
+        path: /nonexistent/test-only-path/sa.json
+
+addresses:
+  - name: event.alpha.v1
+    publisher: gcp-prod
+    target: topic-alpha

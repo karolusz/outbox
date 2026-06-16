@@ -1,0 +1,11 @@
+version: 99
+
+publishers:
+  - name: fake-a
+    plugin: fake
+    config: {}
+
+addresses:
+  - name: event.alpha.v1
+    publisher: fake-a
+    target: topic-alpha

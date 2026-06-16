@@ -1,0 +1,14 @@
+version: 1
+
+# Publisher entry omits the `config:` block entirely. The plugin's
+# factory unmarshals into a zero-valued Config struct. For fake that is
+# fine; for gcppubsub it would error at NewFromConfig with "project is
+# required" — which is the right surfacing.
+publishers:
+  - name: fake-a
+    plugin: fake
+
+addresses:
+  - name: event.alpha.v1
+    publisher: fake-a
+    target: topic-alpha
