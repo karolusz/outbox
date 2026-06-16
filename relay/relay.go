@@ -1,11 +1,9 @@
-// Package outbox implements the Transactional Outbox pattern: events are
-// persisted in the same transaction as the domain write that produces
-// them, and a separate relay process publishes them at-least-once to a
-// broker.
-//
-// This file defines the relay engine and the Publisher contract every
-// broker plugin satisfies.
-package outbox
+// Package relay implements the dispatch side of the transactional outbox:
+// it polls the outbox table for pending rows, resolves each row's logical
+// address through the address book, and hands the message to the resolved
+// Publisher. The Publisher interface and the Message type live in
+// github.com/karolusz/outbox/publisher; this package only consumes them.
+package relay
 
 import (
 	"context"
@@ -14,24 +12,9 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	"github.com/rs/zerolog"
-)
 
-// Publisher is the contract every broker plugin satisfies.
-//
-// Publish is called by the relay's worker for each row. target is the
-// broker-specific destination name (e.g. a Pub/Sub topic) resolved by the
-// address book from msg.Address. msg is the full row for context
-// (payload, ordering key, attributes, id). Implementations MUST be safe
-// for concurrent calls — multiple workers share the same Publisher
-// instance.
-//
-// Close releases any resources the publisher holds (broker connections,
-// background batching goroutines, etc.). Called once at relay shutdown.
-// Plugins with nothing to release return nil.
-type Publisher interface {
-	Publish(ctx context.Context, target string, msg *Message) error
-	Close(ctx context.Context) error
-}
+	"github.com/karolusz/outbox"
+)
 
 // Metrics is the relay's optional observability hook. Adopters wire it to
 // whatever metrics stack they use (Prometheus, OpenTelemetry, expvar);
@@ -64,25 +47,24 @@ type WorkerConfig struct {
 	LeewayDurationSec int           // seconds inbetween delivery attempts
 }
 
-type OutboxRelay struct {
+type Relay struct {
 	ctx       context.Context
 	db        *sqlx.DB
 	dbSchema  string
 	logger    *zerolog.Logger
-	book      *AddressBook
+	book      *outbox.AddressBook
 	metrics   Metrics
 	workerCfg *WorkerConfig
 }
 
-// NewOutboxRelay constructs the relay with the given DB, logger, address
-// book, and worker config. Metrics default to a no-op implementation;
-// override via SetMetrics if you want them wired to your observability
-// stack.
+// New constructs the relay with the given DB, logger, address book, and
+// worker config. Metrics default to a no-op implementation; override via
+// SetMetrics if you want them wired to your observability stack.
 //
 // The book must be non-nil. Adopters with a single publisher who want
 // v0.1-style "address = broker target" semantics should pass
-// SinglePublisherAddressBook(pub).
-func NewOutboxRelay(db *sqlx.DB, logger *zerolog.Logger, book *AddressBook, workerConfig *WorkerConfig) OutboxRelay {
+// outbox.SinglePublisherAddressBook(pub).
+func New(db *sqlx.DB, logger *zerolog.Logger, book *outbox.AddressBook, workerConfig *WorkerConfig) Relay {
 	if workerConfig == nil {
 		workerConfig = &WorkerConfig{
 			WorkerCount:       8,
@@ -92,7 +74,7 @@ func NewOutboxRelay(db *sqlx.DB, logger *zerolog.Logger, book *AddressBook, work
 			LeewayDurationSec: 5,
 		}
 	}
-	return OutboxRelay{
+	return Relay{
 		db:        db,
 		logger:    logger,
 		book:      book,
@@ -103,7 +85,7 @@ func NewOutboxRelay(db *sqlx.DB, logger *zerolog.Logger, book *AddressBook, work
 
 // SetMetrics installs a Metrics implementation for the relay. Call before
 // Start. Passing nil restores the default no-op metrics.
-func (o *OutboxRelay) SetMetrics(m Metrics) {
+func (o *Relay) SetMetrics(m Metrics) {
 	if m == nil {
 		o.metrics = noopMetrics{}
 		return
@@ -118,7 +100,7 @@ func (o *OutboxRelay) SetMetrics(m Metrics) {
 // inside it into errors so worker goroutines never die mid-loop; a panic that
 // escapes that scope (e.g. in the producer or relay setup) crashes the process
 // and defers recovery to whatever runs the binary (typically k8s).
-func (o *OutboxRelay) Start(ctx context.Context, heartbeatFn func() error) <-chan struct{} {
+func (o *Relay) Start(ctx context.Context, heartbeatFn func() error) <-chan struct{} {
 	completeChan := make(chan struct{})
 	go func() {
 		defer close(completeChan)
@@ -148,9 +130,9 @@ func (o *OutboxRelay) Start(ctx context.Context, heartbeatFn func() error) <-cha
 		// to finish, then close the queue so workers drain to a natural exit.
 		select {
 		case <-relayCtx.Done():
-			o.logger.Debug().Msg("OutboxRelay: context canceled, shutting down")
+			o.logger.Debug().Msg("relay: context canceled, shutting down")
 		case <-producerDone:
-			o.logger.Debug().Msg("OutboxRelay: producer exited, shutting down")
+			o.logger.Debug().Msg("relay: producer exited, shutting down")
 			cancel()
 		}
 
@@ -158,7 +140,7 @@ func (o *OutboxRelay) Start(ctx context.Context, heartbeatFn func() error) <-cha
 		close(queue)
 
 		wg.Wait() // wait for all workers to finish
-		o.logger.Debug().Msg("OutboxRelay: all workers stopped, exiting")
+		o.logger.Debug().Msg("relay: all workers stopped, exiting")
 	}()
 	return completeChan
 }

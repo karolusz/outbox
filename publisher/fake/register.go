@@ -3,7 +3,7 @@ package fake
 import (
 	"context"
 
-	"github.com/karolusz/outbox"
+	"github.com/karolusz/outbox/publisher"
 )
 
 // Config is the YAML-visible configuration for the fake publisher.
@@ -22,7 +22,7 @@ type Config struct{}
 // Useful in test binaries and for "soft launch" setups where the YAML
 // references plugin "fake" instead of a real broker.
 func init() {
-	outbox.RegisterPlugin("fake", func(ctx context.Context, decode outbox.ConfigDecoder) (outbox.Publisher, error) {
+	publisher.Register("fake", func(ctx context.Context, decode publisher.ConfigDecoder) (publisher.Publisher, error) {
 		// The fake publisher takes no config; the decoder is not invoked.
 		return New(), nil
 	})

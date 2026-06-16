@@ -1,6 +1,6 @@
 //go:build testing
 
-package outbox
+package publisher
 
 import (
 	"testing"
