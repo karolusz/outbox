@@ -1,0 +1,11 @@
+.git
+.github
+docs
+docker
+docker-compose.yml
+Makefile
+*.md
+internal/testutils
+test
+testdata
+**/*_test.go
