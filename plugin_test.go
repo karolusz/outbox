@@ -12,14 +12,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// resetPluginRegistry empties the package-level registry. Test-only;
-// the testing build tag keeps it out of production binaries. Tests that
-// register plugins should defer this so they leave the registry clean
-// for subsequent tests.
+// resetPluginRegistry swaps in a fresh registry for test isolation.
+// Test-only; the testing build tag keeps it out of production binaries.
+// Tests that register plugins should defer this so they leave the
+// registry clean for subsequent tests.
 func resetPluginRegistry() {
-	pluginRegistryMu.Lock()
-	defer pluginRegistryMu.Unlock()
-	pluginRegistry = make(map[string]PluginFactory)
+	globalRegistry = newPluginRegistry()
 }
 
 func noopFactory(ctx context.Context, raw []byte) (Publisher, error) {

@@ -18,15 +18,56 @@ import (
 // Publisher (or an error).
 type PluginFactory func(ctx context.Context, rawConfig []byte) (Publisher, error)
 
-// pluginRegistry is the package-level singleton holding all registered
-// plugins. The pattern mirrors database/sql.Register: blank-import the
-// plugin package, its init() registers a factory, the lib looks up the
-// factory at AddressBook construction time. There is no Unregister and
-// no clear; plugins live for process lifetime.
-var (
-	pluginRegistryMu sync.RWMutex
-	pluginRegistry   = make(map[string]PluginFactory)
-)
+// pluginRegistry holds registered plugin factories. The lock and the map
+// are kept together as one type so callers cannot accidentally read or
+// write the map outside the lock. There is no unregister and no clear at
+// the type level; plugins live for process lifetime.
+type pluginRegistry struct {
+	mu      sync.RWMutex
+	plugins map[string]PluginFactory
+}
+
+func newPluginRegistry() *pluginRegistry {
+	return &pluginRegistry{plugins: make(map[string]PluginFactory)}
+}
+
+// register associates a plugin name with its factory. Panics on duplicate
+// names. Input validation (empty name, nil factory) is the public
+// RegisterPlugin function's job; this method assumes well-formed input.
+func (r *pluginRegistry) register(name string, factory PluginFactory) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.plugins[name]; exists {
+		panic(fmt.Sprintf("outbox: plugin %q already registered", name))
+	}
+	r.plugins[name] = factory
+}
+
+// list returns the registered plugin names sorted alphabetically.
+func (r *pluginRegistry) list() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make([]string, 0, len(r.plugins))
+	for name := range r.plugins {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// lookup retrieves a factory by name.
+func (r *pluginRegistry) lookup(name string) (PluginFactory, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	f, ok := r.plugins[name]
+	return f, ok
+}
+
+// globalRegistry is the process-wide plugin registry. The pattern mirrors
+// database/sql.Register: blank-import the plugin package, its init()
+// registers a factory, the lib looks up the factory at AddressBook
+// construction time.
+var globalRegistry = newPluginRegistry()
 
 // RegisterPlugin associates a plugin name with its factory function.
 // Typically called from a plugin package's init(), with adopters blank-
@@ -45,34 +86,20 @@ func RegisterPlugin(name string, factory PluginFactory) {
 	if factory == nil {
 		panic(fmt.Sprintf("outbox: RegisterPlugin(%q) called with nil factory", name))
 	}
-	pluginRegistryMu.Lock()
-	defer pluginRegistryMu.Unlock()
-	if _, exists := pluginRegistry[name]; exists {
-		panic(fmt.Sprintf("outbox: plugin %q already registered", name))
-	}
-	pluginRegistry[name] = factory
+	globalRegistry.register(name, factory)
 }
 
 // RegisteredPlugins returns the names of all currently-registered plugins,
 // sorted alphabetically. Useful for diagnostics, "list available plugins"
 // output, and confirming a blank-import side-effect actually ran.
 func RegisteredPlugins() []string {
-	pluginRegistryMu.RLock()
-	defer pluginRegistryMu.RUnlock()
-	names := make([]string, 0, len(pluginRegistry))
-	for name := range pluginRegistry {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return globalRegistry.list()
 }
 
-// lookupPlugin retrieves a factory by name. Used internally by the YAML
-// loader; unexported because adopters should reach for RegisteredPlugins
-// for diagnostics rather than handle factories directly.
+// lookupPlugin retrieves a factory by name from the global registry. Used
+// internally by the YAML loader; unexported because adopters should reach
+// for RegisteredPlugins for diagnostics rather than handle factories
+// directly.
 func lookupPlugin(name string) (PluginFactory, bool) {
-	pluginRegistryMu.RLock()
-	defer pluginRegistryMu.RUnlock()
-	f, ok := pluginRegistry[name]
-	return f, ok
+	return globalRegistry.lookup(name)
 }
