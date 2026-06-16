@@ -57,6 +57,18 @@ type Relay struct {
 	workerCfg *WorkerConfig
 }
 
+// Option configures a Relay at construction time. Passed to New as a
+// variadic trailing arg.
+type Option func(*Relay)
+
+// WithDBSchema overrides the Postgres schema the relay uses for its
+// tables. Default "outbox" (matching the migration's CREATE SCHEMA).
+// Useful for adopters with name conflicts or unusual setups; most should
+// leave it alone.
+func WithDBSchema(name string) Option {
+	return func(r *Relay) { r.dbSchema = name }
+}
+
 // New constructs the relay with the given DB, logger, address book, and
 // worker config. Metrics default to a no-op implementation; override via
 // SetMetrics if you want them wired to your observability stack.
@@ -64,7 +76,10 @@ type Relay struct {
 // The book must be non-nil. Adopters with a single publisher who want
 // v0.1-style "address = broker target" semantics should pass
 // outbox.SinglePublisherAddressBook(pub).
-func New(db *sqlx.DB, logger *zerolog.Logger, book *outbox.AddressBook, workerConfig *WorkerConfig) Relay {
+//
+// Optional arguments via Option (e.g. WithDBSchema) configure adopter-
+// specific overrides; default values are sensible.
+func New(db *sqlx.DB, logger *zerolog.Logger, book *outbox.AddressBook, workerConfig *WorkerConfig, opts ...Option) Relay {
 	if workerConfig == nil {
 		workerConfig = &WorkerConfig{
 			WorkerCount:       8,
@@ -74,13 +89,18 @@ func New(db *sqlx.DB, logger *zerolog.Logger, book *outbox.AddressBook, workerCo
 			LeewayDurationSec: 5,
 		}
 	}
-	return Relay{
+	r := Relay{
 		db:        db,
+		dbSchema:  "outbox",
 		logger:    logger,
 		book:      book,
 		metrics:   noopMetrics{},
 		workerCfg: workerConfig,
 	}
+	for _, opt := range opts {
+		opt(&r)
+	}
+	return r
 }
 
 // SetMetrics installs a Metrics implementation for the relay. Call before

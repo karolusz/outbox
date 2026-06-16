@@ -17,10 +17,10 @@ import (
 )
 
 // TestSend_InsertsRow exercises the outboxsqlx public path end-to-end:
-// open a real *sqlx.Tx, call outboxsqlx.Send, commit, verify the row is in
-// outbox_events. Catches typos / wrong delegation inside the sub-package
-// that the top-level api_test.go (which uses its own inline adapter) does
-// not exercise.
+// open a real *sqlx.Tx, call outboxsqlx.Send, commit, verify the row is
+// in outbox.messages. Catches typos / wrong delegation inside the
+// sub-package that the top-level api_test.go (which uses its own inline
+// adapter) does not exercise.
 func TestSend_InsertsRow(t *testing.T) {
 	connStr := os.Getenv("DB_CONNECTION_STRING")
 	if connStr == "" {
@@ -37,10 +37,9 @@ func TestSend_InsertsRow(t *testing.T) {
 
 	msg := outbox.Message{
 		Data:        []byte("hello via outboxsqlx"),
-		Attributes:  publisher.JSONBMap{"k": "v"},
+		Headers:     publisher.JSONBMap{"k": "v"},
 		Address:     "sqlx_topic",
 		OrderingKey: "key-1",
-		EventType:   "test.sqlx",
 		RetryLimit:  3,
 	}
 
@@ -48,7 +47,7 @@ func TestSend_InsertsRow(t *testing.T) {
 	require.NoError(t, tx.Commit())
 
 	var count int
-	require.NoError(t, db.Get(&count, "SELECT COUNT(*) FROM outbox_events WHERE topic = $1", "sqlx_topic"))
+	require.NoError(t, db.Get(&count, "SELECT COUNT(*) FROM outbox.messages WHERE address = $1", "sqlx_topic"))
 	require.Equal(t, 1, count)
 }
 
@@ -68,13 +67,13 @@ func TestSendBatch_InsertsAll(t *testing.T) {
 	t.Cleanup(func() { _ = tx.Rollback() })
 
 	msgs := []outbox.Message{
-		{Data: []byte("a"), Address: "batch", OrderingKey: "k1", EventType: "e1", RetryLimit: 3},
-		{Data: []byte("b"), Address: "batch", OrderingKey: "k2", EventType: "e2", RetryLimit: 3},
+		{Data: []byte("a"), Address: "batch", OrderingKey: "k1", RetryLimit: 3},
+		{Data: []byte("b"), Address: "batch", OrderingKey: "k2", RetryLimit: 3},
 	}
 	require.NoError(t, outboxsqlx.SendBatch(context.Background(), tx, msgs))
 	require.NoError(t, tx.Commit())
 
 	var count int
-	require.NoError(t, db.Get(&count, "SELECT COUNT(*) FROM outbox_events WHERE topic = $1", "batch"))
+	require.NoError(t, db.Get(&count, "SELECT COUNT(*) FROM outbox.messages WHERE address = $1", "batch"))
 	require.Equal(t, 2, count)
 }

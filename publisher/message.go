@@ -9,25 +9,33 @@ import (
 
 // Message is the row stored in the outbox table and the value handed to the
 // Publisher. The fields it carries are everything a publisher needs to
-// deliver the event to its destination, plus the bookkeeping the relay uses
-// to track delivery attempts.
+// deliver the event to its destination, plus the bookkeeping the relay
+// uses to track delivery attempts.
 //
-// Address is the producer-visible logical name (e.g. "payments.completed.v1").
-// In v0.2+, the address book resolves it to a (publisher, target) pair at
-// publish time. In v0.1 setups without an address book, the address is
-// passed through as the broker target verbatim. The db column remains
-// "topic" via struct tag for backwards compatibility with the v0.1 schema.
+// Address is the producer-visible logical name (e.g.
+// "payments.completed.v1"). The address book resolves it to a
+// (publisher, target) pair at publish time.
+//
+// EventID is a producer-supplied UUID (UUIDv7 recommended) for end-to-end
+// dedup at the broker / consumer side. If a producer leaves it empty, the
+// outbox.Send helper fills it client-side; if the row is inserted via raw
+// SQL with NULL or DEFAULT, the DB applies the uuidv7() default.
 type Message struct {
+	// Relay-managed (do not populate at insert time).
 	ID              int64      `db:"id"`
-	Data            []byte     `db:"data"`
-	Attributes      JSONBMap   `db:"attributes"`
-	Address         string     `db:"topic"` // logical address; db column kept as "topic"
-	OrderingKey     string     `db:"ordering_key"`
-	EventType       string     `db:"event_type"`
 	RetryCount      int        `db:"retry_count"`
-	RetryLimit      int        `db:"retry_limit"`
 	CreatedAt       time.Time  `db:"created_at"`
 	LastAttemptedAt *time.Time `db:"last_attempted_at"`
+
+	// Producer-populated (required).
+	Address    string `db:"address"`
+	Data       []byte `db:"data"`
+	RetryLimit int    `db:"retry_limit"`
+
+	// Producer-populated (optional — sensible defaults if zero).
+	EventID     string   `db:"event_id"`
+	Headers     JSONBMap `db:"headers"`
+	OrderingKey string   `db:"ordering_key"`
 }
 
 // JSONBMap is a map[string]string that knows how to round-trip through a

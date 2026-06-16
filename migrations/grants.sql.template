@@ -1,0 +1,21 @@
+-- Reference GRANT template for the outbox schema. Substitute {{app_role}}
+-- and {{relay_role}} with your actual role names and apply once after the
+-- initial migration runs. Adopters who run their app and relay under the
+-- same DB role can merge the two GRANT blocks into one.
+--
+-- Principle-of-least-privilege split:
+--   - app_role   : producer side. Inserts outbox rows inside the same tx
+--                  as the domain write. Only INSERT is needed on the table
+--                  plus USAGE on the sequence so BIGSERIAL works.
+--   - relay_role : relay side. Reads, updates, and deletes rows as they
+--                  flow through the publish pipeline.
+
+-- Producer (application) role
+GRANT USAGE ON SCHEMA outbox TO {{app_role}};
+GRANT INSERT ON outbox.messages TO {{app_role}};
+GRANT USAGE, SELECT ON SEQUENCE outbox.messages_id_seq TO {{app_role}};
+
+-- Relay role
+GRANT USAGE ON SCHEMA outbox TO {{relay_role}};
+GRANT SELECT, UPDATE, DELETE ON outbox.messages TO {{relay_role}};
+GRANT USAGE, SELECT ON SEQUENCE outbox.messages_id_seq TO {{relay_role}};

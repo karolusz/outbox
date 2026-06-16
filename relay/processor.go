@@ -20,7 +20,7 @@ func (o *Relay) eventProcessor(ctx context.Context, queue chan int64, hearbeatFn
 				_ = hearbeatFn()
 			}
 			// retrireve pending event IDs
-			pendingIDs, err := getAllPendingEventIDs(o.db, o.workerCfg.BatchSize, o.workerCfg.LeewayDurationSec)
+			pendingIDs, err := getAllPendingEventIDs(o.db, o.dbSchema, o.workerCfg.BatchSize, o.workerCfg.LeewayDurationSec)
 			if err != nil {
 				o.logger.Warn().Err(err).Msg("eventProducer: failed to get pending outbox event IDs")
 				continue

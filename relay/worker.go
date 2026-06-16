@@ -92,7 +92,7 @@ func (o *Relay) markPanickedDeliveryAttempt(ctx context.Context, id int64, cause
 		}
 	}()
 
-	marked, err := tryIncrementRetryCount(tx, id)
+	marked, err := tryIncrementRetryCount(tx, o.dbSchema, id)
 	if err != nil {
 		return fmt.Errorf("increment retry count for panicked event %d: %w", id, err)
 	}
@@ -140,7 +140,7 @@ func (o *Relay) processOne(ctx context.Context, logger zerolog.Logger, id int64)
 	}()
 
 	logger.Debug().Int64("event_id", id).Msg("processing outbox event")
-	outboxEvent, err := getEventByIDIfNotLocked(tx, id)
+	outboxEvent, err := getEventByIDIfNotLocked(tx, o.dbSchema, id)
 	if err == sql.ErrNoRows {
 		logger.Debug().Int64("event_id", id).Msg("no event retrieved — already processed or locked elsewhere")
 		return nil
@@ -161,7 +161,7 @@ func (o *Relay) processOne(ctx context.Context, logger zerolog.Logger, id int64)
 	if errors.Is(resolveErr, outbox.ErrUnknownAddress) {
 		logger.Error().Str("address", outboxEvent.Address).Msg("unknown address; preserving row for retry once address book is updated")
 		o.metrics.IncUnknownAddress(outboxEvent.Address)
-		if updateErr := setLastAttemptedAt(tx, outboxEvent.ID); updateErr != nil {
+		if updateErr := setLastAttemptedAt(tx, o.dbSchema, outboxEvent.ID); updateErr != nil {
 			return fmt.Errorf("set last_attempted_at for unknown-address row: %w", updateErr)
 		}
 		if commitErr := tx.Commit(); commitErr != nil {
@@ -179,7 +179,7 @@ func (o *Relay) processOne(ctx context.Context, logger zerolog.Logger, id int64)
 	if publishErr := publisher.Publish(ctx, target, outboxEvent); publishErr != nil {
 		logger.Debug().Err(publishErr).Msg("failed to publish outbox event")
 		outboxEvent.RetryCount++
-		if updateErr := incrementRetryCount(tx, outboxEvent.ID); updateErr != nil {
+		if updateErr := incrementRetryCount(tx, o.dbSchema, outboxEvent.ID); updateErr != nil {
 			return fmt.Errorf("update retry count: %w (publishErr: %w)", updateErr, publishErr)
 		}
 		if commitErr := tx.Commit(); commitErr != nil {
@@ -191,7 +191,7 @@ func (o *Relay) processOne(ctx context.Context, logger zerolog.Logger, id int64)
 		return publishErr
 	}
 
-	if deleteErr := deleteOneEvent(tx, id); deleteErr != nil {
+	if deleteErr := deleteOneEvent(tx, o.dbSchema, id); deleteErr != nil {
 		return fmt.Errorf("delete published event: %w", deleteErr)
 	}
 	if commitErr := tx.Commit(); commitErr != nil {

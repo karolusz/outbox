@@ -72,7 +72,7 @@ func (p *Publisher) Publish(ctx context.Context, target string, msg *outboxpub.M
 	topic := p.client.Topic(target)
 	result := topic.Publish(ctx, &pubsub.Message{
 		Data:        msg.Data,
-		Attributes:  msg.Attributes,
+		Attributes:  msg.Headers,
 		OrderingKey: msg.OrderingKey,
 	})
 	_, err := result.Get(ctx)

@@ -67,13 +67,13 @@ func TestProcessOne_UnknownAddress_PreservesRetryCount(t *testing.T) {
 
 	// retry_count MUST be unchanged (still 0).
 	var retryCount int
-	require.NoError(t, db.Get(&retryCount, "SELECT retry_count FROM outbox_events WHERE id = 777"))
+	require.NoError(t, db.Get(&retryCount, "SELECT retry_count FROM outbox.messages WHERE id = 777"))
 	assert.Equal(t, 0, retryCount, "unknown-address handling MUST NOT increment retry_count (silent data loss otherwise)")
 
 	// last_attempted_at MUST be set so the row is throttled out of the
 	// next worker tick by the leeway window.
 	var lastAttemptedAtIsSet bool
-	require.NoError(t, db.Get(&lastAttemptedAtIsSet, "SELECT last_attempted_at IS NOT NULL FROM outbox_events WHERE id = 777"))
+	require.NoError(t, db.Get(&lastAttemptedAtIsSet, "SELECT last_attempted_at IS NOT NULL FROM outbox.messages WHERE id = 777"))
 	assert.True(t, lastAttemptedAtIsSet, "unknown-address handling must set last_attempted_at")
 
 	// The metric must have fired exactly once for this address.
@@ -81,7 +81,7 @@ func TestProcessOne_UnknownAddress_PreservesRetryCount(t *testing.T) {
 
 	// The row must still be in the table.
 	var count int
-	require.NoError(t, db.Get(&count, "SELECT COUNT(*) FROM outbox_events WHERE id = 777"))
+	require.NoError(t, db.Get(&count, "SELECT COUNT(*) FROM outbox.messages WHERE id = 777"))
 	assert.Equal(t, 1, count, "unknown-address row must NOT be deleted — relay redeploy with updated book recovers it")
 }
 
@@ -121,14 +121,14 @@ func TestProcessOne_UnknownAddress_RecoverableAfterBookUpdate(t *testing.T) {
 
 	// Need to bypass the leeway to re-process the row. Forcibly clear
 	// last_attempted_at to simulate the next poll cycle picking it up.
-	_, err = db.Exec("UPDATE outbox_events SET last_attempted_at = NULL WHERE id = 777")
+	_, err = db.Exec("UPDATE outbox.messages SET last_attempted_at = NULL WHERE id = 777")
 	require.NoError(t, err)
 
 	require.NoError(t, o.processOne(ctx, testLogger, 777))
 
 	// Row should now be deleted — published successfully.
 	var count int
-	require.NoError(t, db.Get(&count, "SELECT COUNT(*) FROM outbox_events WHERE id = 777"))
+	require.NoError(t, db.Get(&count, "SELECT COUNT(*) FROM outbox.messages WHERE id = 777"))
 	assert.Equal(t, 0, count, "after book update, the row publishes and is deleted")
 }
 

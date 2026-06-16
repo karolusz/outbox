@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS outbox.messages;
+DROP SCHEMA IF EXISTS outbox;
