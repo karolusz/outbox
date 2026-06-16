@@ -20,7 +20,7 @@ func resetPluginRegistry() {
 	globalRegistry = newPluginRegistry()
 }
 
-func noopFactory(ctx context.Context, raw []byte) (Publisher, error) {
+func noopFactory(ctx context.Context, decode ConfigDecoder) (Publisher, error) {
 	return nil, nil
 }
 
@@ -93,16 +93,33 @@ func TestFactoryIsActuallyCalled(t *testing.T) {
 	resetPluginRegistry()
 
 	sentinelErr := errors.New("sentinel from factory")
-	RegisterPlugin("sentinel", func(ctx context.Context, raw []byte) (Publisher, error) {
-		return nil, fmt.Errorf("got %d config bytes: %w", len(raw), sentinelErr)
+	type cfg struct {
+		Name string `yaml:"name"`
+	}
+	RegisterPlugin("sentinel", func(ctx context.Context, decode ConfigDecoder) (Publisher, error) {
+		var c cfg
+		if err := decode(&c); err != nil {
+			return nil, fmt.Errorf("decode: %w", err)
+		}
+		return nil, fmt.Errorf("decoded name=%q: %w", c.Name, sentinelErr)
 	})
 
 	f, ok := lookupPlugin("sentinel")
 	require.True(t, ok)
 
-	rawConfig := []byte("some-config-bytes")
-	_, err := f(context.Background(), rawConfig)
+	// Direct invocation with a hand-built decoder that fills in a known
+	// value. Confirms the factory receives a real decoder, can decode
+	// through it, and returns errors that flow back to the caller.
+	decode := func(v any) error {
+		dst, ok := v.(*cfg)
+		if !ok {
+			return errors.New("test decoder only supports *cfg")
+		}
+		dst.Name = "sentinel-test"
+		return nil
+	}
+	_, err := f(context.Background(), decode)
 	require.Error(t, err)
 	require.ErrorIs(t, err, sentinelErr, "round-trip should preserve the factory's error")
-	assert.Contains(t, err.Error(), fmt.Sprintf("got %d config bytes", len(rawConfig)))
+	assert.Contains(t, err.Error(), `decoded name="sentinel-test"`)
 }

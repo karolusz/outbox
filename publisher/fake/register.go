@@ -22,8 +22,8 @@ type Config struct{}
 // Useful in test binaries and for "soft launch" setups where the YAML
 // references plugin "fake" instead of a real broker.
 func init() {
-	outbox.RegisterPlugin("fake", func(ctx context.Context, raw []byte) (outbox.Publisher, error) {
-		// The fake publisher takes no config; raw YAML is ignored.
+	outbox.RegisterPlugin("fake", func(ctx context.Context, decode outbox.ConfigDecoder) (outbox.Publisher, error) {
+		// The fake publisher takes no config; the decoder is not invoked.
 		return New(), nil
 	})
 }
