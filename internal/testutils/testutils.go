@@ -145,8 +145,10 @@ func parseConnStr(connStr string) (string, string, error) {
 
 func truncateAllTables(db *sqlx.DB) error {
 	rows, err := db.Query(`
-		SELECT tablename FROM pg_tables
-		WHERE schemaname = 'public' AND tablename NOT LIKE 'goose_%'`)
+		SELECT schemaname, tablename
+		FROM pg_tables
+		WHERE schemaname IN ('public', 'outbox')
+		  AND tablename NOT LIKE 'goose_%'`)
 	if err != nil {
 		return err
 	}
@@ -154,11 +156,11 @@ func truncateAllTables(db *sqlx.DB) error {
 
 	var tables []string
 	for rows.Next() {
-		var t string
-		if err := rows.Scan(&t); err != nil {
+		var schema, t string
+		if err := rows.Scan(&schema, &t); err != nil {
 			return err
 		}
-		tables = append(tables, t)
+		tables = append(tables, fmt.Sprintf("%s.%s", schema, t))
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -166,7 +168,10 @@ func truncateAllTables(db *sqlx.DB) error {
 	if len(tables) == 0 {
 		return nil
 	}
-	_, err = db.Exec(fmt.Sprintf("TRUNCATE TABLE %s CASCADE", strings.Join(tables, ", ")))
+	// RESTART IDENTITY resets sequences so each test starts with id=1.
+	// The seed SQLs assume this; without it, ids drift across tests as
+	// the template DB sequences advance.
+	_, err = db.Exec(fmt.Sprintf("TRUNCATE TABLE %s RESTART IDENTITY CASCADE", strings.Join(tables, ", ")))
 	return err
 }
 

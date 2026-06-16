@@ -152,11 +152,11 @@ func TestWorker_RecoversFromPanicAndContinues(t *testing.T) {
 	}
 
 	var retryCount int
-	require.NoError(t, db.Get(&retryCount, "SELECT retry_count FROM outbox_events WHERE id = 999"))
+	require.NoError(t, db.Get(&retryCount, "SELECT retry_count FROM outbox.messages WHERE id = 999"))
 	require.Equal(t, 1, retryCount, "retry_count should be incremented after panic")
 
 	var lastAttemptedAtSet bool
-	require.NoError(t, db.Get(&lastAttemptedAtSet, "SELECT last_attempted_at IS NOT NULL FROM outbox_events WHERE id = 999"))
+	require.NoError(t, db.Get(&lastAttemptedAtSet, "SELECT last_attempted_at IS NOT NULL FROM outbox.messages WHERE id = 999"))
 	require.True(t, lastAttemptedAtSet, "last_attempted_at should be set after a panic marks the row")
 }
 
@@ -198,12 +198,12 @@ func TestMarkPanickedDeliveryAttempt_IncrementsRetryCount(t *testing.T) {
 	o := &Relay{db: db, logger: &testLogger, workerCfg: &WorkerConfig{}}
 
 	var initial int
-	require.NoError(t, db.Get(&initial, "SELECT retry_count FROM outbox_events WHERE id = 999"))
+	require.NoError(t, db.Get(&initial, "SELECT retry_count FROM outbox.messages WHERE id = 999"))
 
 	require.NoError(t, o.markPanickedDeliveryAttempt(ctx, 999, fmt.Errorf("simulated panic")))
 
 	var after int
-	require.NoError(t, db.Get(&after, "SELECT retry_count FROM outbox_events WHERE id = 999"))
+	require.NoError(t, db.Get(&after, "SELECT retry_count FROM outbox.messages WHERE id = 999"))
 	require.Equal(t, initial+1, after, "retry_count should be incremented by one")
 }
 
@@ -224,7 +224,7 @@ func TestMarkPanickedDeliveryAttempt_SkipsWhenLocked(t *testing.T) {
 	o := &Relay{db: db, logger: &testLogger, workerCfg: &WorkerConfig{}}
 
 	var initialRetry int
-	require.NoError(t, db.Get(&initialRetry, "SELECT retry_count FROM outbox_events WHERE id = 999"))
+	require.NoError(t, db.Get(&initialRetry, "SELECT retry_count FROM outbox.messages WHERE id = 999"))
 
 	// Hold a conflicting lock on row 999 in a separate transaction.
 	blockerTx, err := db.Beginx()
@@ -232,7 +232,7 @@ func TestMarkPanickedDeliveryAttempt_SkipsWhenLocked(t *testing.T) {
 	defer func() { _ = blockerTx.Rollback() }()
 
 	var locked int64
-	require.NoError(t, blockerTx.Get(&locked, "SELECT id FROM outbox_events WHERE id = 999 FOR NO KEY UPDATE"))
+	require.NoError(t, blockerTx.Get(&locked, "SELECT id FROM outbox.messages WHERE id = 999 FOR NO KEY UPDATE"))
 	require.Equal(t, int64(999), locked)
 
 	// markPanickedDeliveryAttempt must NOT block here. Run it on another goroutine
@@ -251,7 +251,7 @@ func TestMarkPanickedDeliveryAttempt_SkipsWhenLocked(t *testing.T) {
 
 	// retry_count must be unchanged — the marking was skipped, not applied.
 	var afterRetry int
-	require.NoError(t, db.Get(&afterRetry, "SELECT retry_count FROM outbox_events WHERE id = 999"))
+	require.NoError(t, db.Get(&afterRetry, "SELECT retry_count FROM outbox.messages WHERE id = 999"))
 	require.Equal(t, initialRetry, afterRetry, "retry_count must not change when the row was locked")
 
 	// Releasing the blocker lock and re-marking should now succeed.
@@ -260,7 +260,7 @@ func TestMarkPanickedDeliveryAttempt_SkipsWhenLocked(t *testing.T) {
 	require.NoError(t, o.markPanickedDeliveryAttempt(ctx, 999, fmt.Errorf("simulated panic")))
 
 	var finalRetry int
-	require.NoError(t, db.Get(&finalRetry, "SELECT retry_count FROM outbox_events WHERE id = 999"))
+	require.NoError(t, db.Get(&finalRetry, "SELECT retry_count FROM outbox.messages WHERE id = 999"))
 	require.Equal(t, initialRetry+1, finalRetry, "retry_count should be incremented once the lock is released")
 }
 
@@ -313,7 +313,7 @@ func TestWorker_HandlesMultipleConsecutivePanics(t *testing.T) {
 	require.Equal(t, 4, publishCount, "publisher should be called exactly 4 times (2 panics + 2 successes)")
 
 	var remaining int
-	require.NoError(t, db.Get(&remaining, "SELECT COUNT(*) FROM outbox_events WHERE id IN (999, 42)"))
+	require.NoError(t, db.Get(&remaining, "SELECT COUNT(*) FROM outbox.messages WHERE id IN (999, 42)"))
 	require.Equal(t, 0, remaining, "both events should be deleted after their eventual successful publish")
 }
 
@@ -361,7 +361,7 @@ func TestWorker_DoesNotMarkOnNormalPublishError(t *testing.T) {
 	}
 
 	var retry int
-	require.NoError(t, db.Get(&retry, "SELECT retry_count FROM outbox_events WHERE id = 999"))
+	require.NoError(t, db.Get(&retry, "SELECT retry_count FROM outbox.messages WHERE id = 999"))
 	require.Equal(t, 1, retry,
 		"retry_count should be incremented exactly once on a regular publish error; a value of 2 would mean the panic-marking path ran on a non-panic error (regression)")
 }
@@ -418,7 +418,7 @@ func TestWorker_PanicsBoundedByRetryLimit(t *testing.T) {
 	}
 
 	var retry int
-	require.NoError(t, db.Get(&retry, "SELECT retry_count FROM outbox_events WHERE id = 999"))
+	require.NoError(t, db.Get(&retry, "SELECT retry_count FROM outbox.messages WHERE id = 999"))
 	require.Equal(t, 2, retry, "retry_count should be capped at retry_limit (2) regardless of further attempts")
 	require.Equal(t, 2, publishCount, "publisher should be called exactly retry_limit (2) times; further attempts must short-circuit at the lock query")
 }
@@ -453,15 +453,15 @@ func TestMarkPanickedDeliveryAttempt_SkipsAtRetryLimit(t *testing.T) {
 	o := &Relay{db: db, logger: &testLogger, workerCfg: &WorkerConfig{}}
 
 	// Force row 999 to be at the cap.
-	_, err := db.Exec("UPDATE outbox_events SET retry_count = retry_limit WHERE id = 999")
+	_, err := db.Exec("UPDATE outbox.messages SET retry_count = retry_limit WHERE id = 999")
 	require.NoError(t, err)
 
 	var atCap int
-	require.NoError(t, db.Get(&atCap, "SELECT retry_count FROM outbox_events WHERE id = 999"))
+	require.NoError(t, db.Get(&atCap, "SELECT retry_count FROM outbox.messages WHERE id = 999"))
 
 	require.NoError(t, o.markPanickedDeliveryAttempt(ctx, 999, fmt.Errorf("simulated panic")))
 
 	var afterRetry int
-	require.NoError(t, db.Get(&afterRetry, "SELECT retry_count FROM outbox_events WHERE id = 999"))
+	require.NoError(t, db.Get(&afterRetry, "SELECT retry_count FROM outbox.messages WHERE id = 999"))
 	require.Equal(t, atCap, afterRetry, "retry_count must not exceed retry_limit even via the panic-marking path")
 }

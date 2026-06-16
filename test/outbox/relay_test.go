@@ -91,7 +91,7 @@ func TestOutbox_EmitsEventsFromOutboxTable(t *testing.T) {
 	relay, pub, db := setupTest(t, "TestOutbox_EmitsEventsFromOutboxTable", seedSQLFile, workerConfig, nil)
 
 	var initCount int
-	if err := db.Get(&initCount, "SELECT COUNT(*) FROM outbox_events"); err != nil {
+	if err := db.Get(&initCount, "SELECT COUNT(*) FROM outbox.messages"); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	assert.Greater(t, initCount, 0, "there should be some messages in the outbox table")
@@ -160,8 +160,8 @@ func insertOutboxEvents(t *testing.T, db *sqlx.DB, count int, totalTime time.Dur
 	t.Helper()
 	for i := range count {
 		db.MustExec(
-			`INSERT INTO outbox_events (data, attributes, topic, ordering_key, event_type)
-			 VALUES (decode('48656c6c6f20576f726c64', 'hex'), '{"foo":"bar"}', 'test_topic', $1, 'user.created')`,
+			`INSERT INTO outbox.messages (data, headers, address, ordering_key)
+			 VALUES (decode('48656c6c6f20576f726c64', 'hex'), '{"foo":"bar"}', 'test_topic', $1)`,
 			i,
 		)
 		time.Sleep(totalTime / time.Duration(count))
@@ -183,7 +183,7 @@ func TestOutbox_IncrementsRetryCounter(t *testing.T) {
 	relay, pub, db := setupTest(t, "TestOutbox_IncrementsRetryCounter", "emitseventsfromoutboxtable.sql", workerConfig, forceErrorFn)
 
 	var initCount int
-	if err := db.Get(&initCount, "SELECT COUNT(*) FROM outbox_events"); err != nil {
+	if err := db.Get(&initCount, "SELECT COUNT(*) FROM outbox.messages"); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	assert.Greater(t, initCount, 0, "there should be some messages in the outbox table")
@@ -210,7 +210,7 @@ receiveLoop:
 	}
 
 	var atMax int
-	if err := db.Get(&atMax, "SELECT COUNT(*) FROM outbox_events WHERE retry_count = retry_limit"); err != nil {
+	if err := db.Get(&atMax, "SELECT COUNT(*) FROM outbox.messages WHERE retry_count = retry_limit"); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	assert.Equal(t, initCount, atMax, "all events should have retry_count at retry_limit")

@@ -7,7 +7,11 @@
 // later pick up and publish.
 package outbox
 
-import "context"
+import (
+	"context"
+
+	"github.com/karolusz/outbox/publisher"
+)
 
 // TxWriter is the adapter the lib writes the outbox row through.
 //
@@ -29,7 +33,15 @@ type TxWriter interface {
 
 // Send saves a single Message inside the caller's transaction. The caller
 // is responsible for committing or rolling back the transaction.
+//
+// If msg.EventID is empty, Send fills it with a fresh UUIDv7 before the
+// INSERT. Producers who want to log or correlate the event ID before the
+// row is written can populate it themselves; producers who don't care
+// get a sensible default for free.
 func Send(ctx context.Context, tx TxWriter, msg Message) error {
+	if msg.EventID == "" {
+		msg.EventID = publisher.NewEventID()
+	}
 	return tx.ExecContext(ctx, insertSQL, insertArgs(msg)...)
 }
 
@@ -47,21 +59,24 @@ func SendBatch(ctx context.Context, tx TxWriter, msgs []Message) error {
 
 // insertSQL is the producer-side INSERT, with positional placeholders so
 // every Postgres driver (database/sql, sqlx, pgx) can execute it directly.
-// retry_count is always 0 on insert; the relay manages it from there.
+// retry_count and created_at are populated by the schema defaults so the
+// producer doesn't need to know them.
 const insertSQL = `
-	INSERT INTO outbox_events (data, attributes, topic, created_at, retry_count, retry_limit, ordering_key, event_type)
-	VALUES ($1, $2, $3, NOW(), 0, $4, $5, $6)
+	INSERT INTO outbox.messages
+		(event_id, address, data, headers, ordering_key, retry_limit)
+	VALUES
+		($1, $2, $3, $4, $5, $6)
 `
 
 // insertArgs returns the positional args matching insertSQL for a single
 // Message. Order matches the column list in insertSQL exactly.
 func insertArgs(msg Message) []any {
 	return []any{
-		msg.Data,
-		msg.Attributes,
+		msg.EventID,
 		msg.Address,
-		msg.RetryLimit,
+		msg.Data,
+		msg.Headers,
 		msg.OrderingKey,
-		msg.EventType,
+		msg.RetryLimit,
 	}
 }
