@@ -1,0 +1,12 @@
+version: 1
+
+publishers:
+  - name: kafka-primary
+    plugin: kafka  # not in the registry (we ship gcppubsub + fake only)
+    config:
+      brokers: [k1:9092]
+
+addresses:
+  - name: event.alpha.v1
+    publisher: kafka-primary
+    target: events

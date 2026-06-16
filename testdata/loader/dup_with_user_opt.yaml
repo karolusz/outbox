@@ -1,0 +1,14 @@
+version: 1
+
+# Fixture for testing the "user opt collides with YAML publisher" path.
+# The test passes WithPublisher("fake-a", ...) alongside this YAML, and
+# expects a duplicate error.
+publishers:
+  - name: fake-a
+    plugin: fake
+    config: {}
+
+addresses:
+  - name: event.alpha.v1
+    publisher: fake-a
+    target: topic-alpha

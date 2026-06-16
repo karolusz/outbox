@@ -1,0 +1,15 @@
+version: 1
+
+publishers:
+  - name: fake-a
+    plugin: fake
+    config: {}
+
+addresses:
+  - name: event.alpha.v1
+    publisher: fake-a
+    target: topic-alpha
+
+  - name: event.beta.v1
+    publisher: nonexistent
+    target: topic-beta
