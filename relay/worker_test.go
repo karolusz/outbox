@@ -17,10 +17,14 @@ import (
 )
 
 type fakePublisher struct {
-	publishFn func(e *publisher.Message) error
+	publishFn    func(e *publisher.Message) error
+	publishFnCtx func(ctx context.Context, e *publisher.Message) error // optional; takes precedence over publishFn when set
 }
 
 func (f fakePublisher) Publish(c context.Context, target string, e *publisher.Message) error {
+	if f.publishFnCtx != nil {
+		return f.publishFnCtx(c, e)
+	}
 	if f.publishFn != nil {
 		return f.publishFn(e)
 	}
@@ -464,4 +468,111 @@ func TestMarkPanickedDeliveryAttempt_SkipsAtRetryLimit(t *testing.T) {
 	var afterRetry int
 	require.NoError(t, db.Get(&afterRetry, "SELECT retry_count FROM outbox.messages WHERE id = 999"))
 	require.Equal(t, atCap, afterRetry, "retry_count must not exceed retry_limit even via the panic-marking path")
+}
+
+// TestProcessOne_PublishTimeout_IncrementsRetryCount verifies that when
+// the per-publish ctx hits its deadline (the relay's PublishTimeout
+// fires before the broker acks), the worker treats it as a regular
+// publish failure: retry_count goes up, the tx commits, the error
+// propagates. This is the "broker is hung; give up and try again next
+// tick" path.
+func TestProcessOne_PublishTimeout_IncrementsRetryCount(t *testing.T) {
+	db, testLogger := setupTest(t, "TestProcessOne_PublishTimeout_IncrementsRetryCount", "worker_recoversFromPanic.sql")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// fakePublisher that blocks until its own ctx is canceled. The
+	// worker's per-publish ctx will time out first.
+	pub := fakePublisher{
+		publishFnCtx: func(ctx context.Context, _ *publisher.Message) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+
+	o := &Relay{
+		db:     db,
+		logger: &testLogger,
+		book:   outbox.SinglePublisherAddressBook(pub),
+		workerCfg: &WorkerConfig{
+			PublishTimeout: 100 * time.Millisecond,
+		},
+		metrics: noopMetrics{},
+	}
+
+	start := time.Now()
+	err := o.processOne(ctx, testLogger, 999)
+	elapsed := time.Since(start)
+
+	require.Error(t, err, "processOne should return the timeout error")
+	require.ErrorIs(t, err, context.DeadlineExceeded, "the publish error should be context.DeadlineExceeded")
+	require.Less(t, elapsed, time.Second, "publish should not have blocked longer than the 100ms timeout (gave 1s of slack)")
+
+	var retry int
+	require.NoError(t, db.Get(&retry, "SELECT retry_count FROM outbox.messages WHERE id = 999"))
+	require.Equal(t, 1, retry, "publish timeout MUST be treated as a real publish failure: retry_count incremented")
+
+	var lastAttemptedAtSet bool
+	require.NoError(t, db.Get(&lastAttemptedAtSet, "SELECT last_attempted_at IS NOT NULL FROM outbox.messages WHERE id = 999"))
+	require.True(t, lastAttemptedAtSet, "last_attempted_at must be set after a publish-failure increment")
+}
+
+// TestProcessOne_ParentCtxCanceled_DoesNotBurnRetry verifies the
+// graceful-shutdown invariant: when the parent ctx is canceled
+// mid-publish (SIGTERM during in-flight delivery), the worker treats
+// it as "abandoned, not failed" — retry_count is NOT incremented, the
+// row is untouched, the next relay process re-picks it from scratch.
+//
+// Burning retries on shutdown would push rows toward retry_limit over
+// repeated deploys / pod evictions, eventually making them invisible
+// to polling — silent data loss exactly when an operator would want
+// to recover them.
+func TestProcessOne_ParentCtxCanceled_DoesNotBurnRetry(t *testing.T) {
+	db, testLogger := setupTest(t, "TestProcessOne_ParentCtxCanceled_DoesNotBurnRetry", "worker_recoversFromPanic.sql")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Publisher that blocks until ctx is canceled, then returns
+	// context.Canceled (mimicking a well-behaved broker SDK reacting
+	// to upstream cancellation).
+	pub := fakePublisher{
+		publishFnCtx: func(ctx context.Context, _ *publisher.Message) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+
+	o := &Relay{
+		db:     db,
+		logger: &testLogger,
+		book:   outbox.SinglePublisherAddressBook(pub),
+		workerCfg: &WorkerConfig{
+			PublishTimeout: 10 * time.Second, // long; we want parent cancel to fire first
+		},
+		metrics: noopMetrics{},
+	}
+
+	var initialRetry int
+	require.NoError(t, db.Get(&initialRetry, "SELECT retry_count FROM outbox.messages WHERE id = 999"))
+	require.Equal(t, 0, initialRetry, "row should start with retry_count=0")
+
+	// Cancel the parent ctx after a short delay; the worker is mid-publish at that point.
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	err := o.processOne(ctx, testLogger, 999)
+	require.Error(t, err, "processOne should return the cancellation error")
+	require.ErrorIs(t, err, context.Canceled)
+
+	var afterRetry int
+	require.NoError(t, db.Get(&afterRetry, "SELECT retry_count FROM outbox.messages WHERE id = 999"))
+	require.Equal(t, 0, afterRetry, "parent ctx cancellation MUST NOT increment retry_count (would cause silent data loss across shutdowns)")
+
+	var lastAttemptedAtIsSet bool
+	require.NoError(t, db.Get(&lastAttemptedAtIsSet, "SELECT last_attempted_at IS NOT NULL FROM outbox.messages WHERE id = 999"))
+	require.False(t, lastAttemptedAtIsSet, "last_attempted_at must remain NULL — the tx rolled back; no DB state changed")
 }

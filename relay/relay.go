@@ -45,6 +45,21 @@ type WorkerConfig struct {
 	BatchSize         int           // number of messages to fetch from DB in one go
 	TickPeriod        time.Duration // interval between DB reads
 	LeewayDurationSec int           // seconds inbetween delivery attempts
+
+	// PublishTimeout caps how long the worker waits for a single
+	// Publisher.Publish call. It is a safety net against hung publishers:
+	// when it expires, the publish fails with context.DeadlineExceeded,
+	// retry_count is incremented, and the row is re-attempted next tick.
+	//
+	// Zero or negative values are treated as "use the default" (30s).
+	// The worker-level timeout is NOT opt-in — if it were, a misconfigured
+	// adopter could disable the safety net by accident and hang workers
+	// indefinitely on a bad broker.
+	//
+	// Plugins MAY apply their own (tighter) timeout internally; the
+	// shorter deadline wins automatically because ctx chains compose
+	// that way.
+	PublishTimeout time.Duration
 }
 
 type Relay struct {
@@ -87,8 +102,19 @@ func New(db *sqlx.DB, logger *zerolog.Logger, book *outbox.AddressBook, workerCo
 			BatchSize:         200,
 			TickPeriod:        2 * time.Second,
 			LeewayDurationSec: 5,
+			PublishTimeout:    30 * time.Second,
 		}
 	}
+	// Normalize the publish-timeout safety net. The worker-level timeout
+	// is not opt-in (see WorkerConfig.PublishTimeout godoc); zero or
+	// negative is rewritten to the default 30s rather than honored as
+	// "disable." We copy the struct so adopter-supplied configs aren't
+	// mutated under them.
+	cfg := *workerConfig
+	if cfg.PublishTimeout <= 0 {
+		cfg.PublishTimeout = 30 * time.Second
+	}
+	workerConfig = &cfg
 	r := Relay{
 		db:        db,
 		dbSchema:  "outbox",
@@ -120,7 +146,7 @@ func (o *Relay) SetMetrics(m Metrics) {
 // inside it into errors so worker goroutines never die mid-loop; a panic that
 // escapes that scope (e.g. in the producer or relay setup) crashes the process
 // and defers recovery to whatever runs the binary (typically k8s).
-func (o *Relay) Start(ctx context.Context, heartbeatFn func() error) <-chan struct{} {
+func (o *Relay) Start(ctx context.Context) <-chan struct{} {
 	completeChan := make(chan struct{})
 	go func() {
 		defer close(completeChan)
@@ -142,7 +168,7 @@ func (o *Relay) Start(ctx context.Context, heartbeatFn func() error) <-chan stru
 		producerDone := make(chan struct{})
 		go func() {
 			defer close(producerDone)
-			o.eventProcessor(relayCtx, queue, heartbeatFn)
+			o.eventProcessor(relayCtx, queue)
 		}()
 
 		// Wait for context cancellation or for the producer to exit.

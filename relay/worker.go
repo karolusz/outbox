@@ -157,7 +157,7 @@ func (o *Relay) processOne(ctx context.Context, logger zerolog.Logger, id int64)
 	// would eventually push the row past retry_limit and make it
 	// invisible to polling, losing the data when the relay later learns
 	// the address. See setLastAttemptedAt in repository.go.
-	publisher, target, resolveErr := o.book.Resolve(outboxEvent.Address)
+	pub, target, resolveErr := o.book.Resolve(outboxEvent.Address)
 	if errors.Is(resolveErr, outbox.ErrUnknownAddress) {
 		logger.Error().Str("address", outboxEvent.Address).Msg("unknown address; preserving row for retry once address book is updated")
 		o.metrics.IncUnknownAddress(outboxEvent.Address)
@@ -176,8 +176,30 @@ func (o *Relay) processOne(ctx context.Context, logger zerolog.Logger, id int64)
 		return fmt.Errorf("resolve address %q: %w", outboxEvent.Address, resolveErr)
 	}
 
-	if publishErr := publisher.Publish(ctx, target, outboxEvent); publishErr != nil {
+	// Derive a child context with the configured publish timeout. The
+	// safety-net deadline is always applied — relay.New normalizes
+	// PublishTimeout so zero is rewritten to the default 30s. Plugins
+	// MAY apply tighter deadlines internally; the shorter wins because
+	// ctx chains compose that way.
+	publishCtx, cancelPublishCtx := context.WithTimeout(ctx, o.workerCfg.PublishTimeout)
+	defer cancelPublishCtx()
+
+	if publishErr := pub.Publish(publishCtx, target, outboxEvent); publishErr != nil {
 		logger.Debug().Err(publishErr).Msg("failed to publish outbox event")
+
+		// If the PARENT ctx was canceled, this is a graceful shutdown —
+		// the publish wasn't a real failure, it was abandoned. Don't
+		// burn a retry; let the row be re-picked by the next relay
+		// process. The tx rolls back via defer; no DB state changes.
+		//
+		// We check the parent ctx, not publishCtx: publishCtx may have
+		// hit its own deadline (a real per-publish timeout we DO want
+		// to count as a failure). Only parent cancellation means
+		// shutdown.
+		if ctx.Err() != nil {
+			return publishErr
+		}
+
 		outboxEvent.RetryCount++
 		if updateErr := incrementRetryCount(tx, o.dbSchema, outboxEvent.ID); updateErr != nil {
 			return fmt.Errorf("update retry count: %w (publishErr: %w)", updateErr, publishErr)

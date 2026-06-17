@@ -17,6 +17,7 @@ package gcppubsub
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"cloud.google.com/go/pubsub"
 
@@ -24,9 +25,10 @@ import (
 )
 
 // Publisher publishes outbox Messages to GCP Pub/Sub topics. Satisfies
-// outbox.Publisher.
+// publisher.Publisher.
 type Publisher struct {
-	client *pubsub.Client
+	client         *pubsub.Client
+	publishTimeout time.Duration // 0 = no per-plugin timeout; relay's deadline still applies
 }
 
 // New constructs a Publisher with a fresh Pub/Sub client for projectID
@@ -51,23 +53,36 @@ func NewFromConfig(ctx context.Context, cfg Config) (*Publisher, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gcppubsub: new client: %w", err)
 	}
-	return &Publisher{client: client}, nil
+	return &Publisher{
+		client:         client,
+		publishTimeout: cfg.PublishTimeout,
+	}, nil
 }
 
 // NewWithClient wraps an existing *pubsub.Client. Useful for tests with the
 // Pub/Sub emulator or for callers who want to share a client across multiple
-// publishers.
+// publishers. No per-plugin publish timeout is applied; the relay's
+// ctx deadline still governs.
 func NewWithClient(client *pubsub.Client) *Publisher {
 	return &Publisher{client: client}
 }
 
-// Publish sends msg to the Pub/Sub topic named in target and blocks until
-// the broker acks (or returns an error). The full broker error is returned
-// to the relay verbatim — there is no error-classification logic in v0.
+// Publish sends msg to the Pub/Sub topic named in target and blocks
+// until the broker acks (or returns an error). The full broker error is
+// returned to the relay verbatim — there is no error-classification
+// logic in v0.
+//
+// If the plugin was configured with PublishTimeout > 0, this method
+// wraps ctx with that deadline before calling the SDK. The relay's
+// worker-level deadline still applies; the shorter of the two wins.
 func (p *Publisher) Publish(ctx context.Context, target string, msg *outboxpub.Message) error {
 	if target == "" {
 		return fmt.Errorf("pubsub: empty target for message id=%d (address=%q)", msg.ID, msg.Address)
 	}
+
+	var cancel context.CancelFunc
+	ctx, cancel = outboxpub.WithOptionalTimeout(ctx, p.publishTimeout)
+	defer cancel()
 
 	topic := p.client.Topic(target)
 	result := topic.Publish(ctx, &pubsub.Message{
