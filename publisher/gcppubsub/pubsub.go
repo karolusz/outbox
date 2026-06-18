@@ -27,8 +27,9 @@ import (
 // Publisher publishes outbox Messages to GCP Pub/Sub topics. Satisfies
 // publisher.Publisher.
 type Publisher struct {
-	client         *pubsub.Client
-	publishTimeout time.Duration // 0 = no per-plugin timeout; relay's deadline still applies
+	client                *pubsub.Client
+	publishTimeout        time.Duration // 0 = no per-plugin timeout; relay's deadline still applies
+	enableMessageOrdering bool          // set on each *pubsub.Topic before Publish so OrderingKey is honoured
 }
 
 // New constructs a Publisher with a fresh Pub/Sub client for projectID
@@ -54,17 +55,10 @@ func NewFromConfig(ctx context.Context, cfg Config) (*Publisher, error) {
 		return nil, fmt.Errorf("gcppubsub: new client: %w", err)
 	}
 	return &Publisher{
-		client:         client,
-		publishTimeout: cfg.PublishTimeout,
+		client:                client,
+		publishTimeout:        cfg.PublishTimeout,
+		enableMessageOrdering: cfg.EnableMessageOrdering,
 	}, nil
-}
-
-// NewWithClient wraps an existing *pubsub.Client. Useful for tests with the
-// Pub/Sub emulator or for callers who want to share a client across multiple
-// publishers. No per-plugin publish timeout is applied; the relay's
-// ctx deadline still governs.
-func NewWithClient(client *pubsub.Client) *Publisher {
-	return &Publisher{client: client}
 }
 
 // Publish sends msg to the Pub/Sub topic named in target and blocks
@@ -85,6 +79,11 @@ func (p *Publisher) Publish(ctx context.Context, target string, msg *outboxpub.M
 	defer cancel()
 
 	topic := p.client.Topic(target)
+	// Must be set on the client-side Topic handle before Publish.
+	// Server-side ordering must also be enabled on the topic itself
+	// (when it was created); without that, ordered Publish calls return
+	// an error from the broker.
+	topic.EnableMessageOrdering = p.enableMessageOrdering
 	result := topic.Publish(ctx, &pubsub.Message{
 		Data:        msg.Data,
 		Attributes:  msg.Headers,

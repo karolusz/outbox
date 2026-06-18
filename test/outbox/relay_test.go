@@ -65,7 +65,18 @@ func setupTest(
 	pub.FailedChan = failedChan
 	pub.ForceErrorFn = forceErrorFn
 
-	r := relay.New(sqlDB, &logger, outbox.SinglePublisherAddressBook(pub), workerConfig)
+	// Routes both addresses used by the testdata fixtures
+	// (emitseventsfromoutboxtable.sql uses "my_topic"; the runtime
+	// inserts in TestOutbox_EmitsEventsAsTheyCome use "test_topic").
+	book, bookErr := outbox.NewAddressBook(
+		outbox.WithPublisher("fake", pub),
+		outbox.WithRoute("my_topic", outbox.Route{Publisher: "fake", Target: "my_topic"}),
+		outbox.WithRoute("test_topic", outbox.Route{Publisher: "fake", Target: "test_topic"}),
+	)
+	if bookErr != nil {
+		t.Fatalf("setupTest: build address book: %v", bookErr)
+	}
+	r := relay.New(sqlDB, &logger, book, workerConfig)
 	t.Cleanup(func() { teardownTest(t, sqlDB, testName) })
 	return &r, pub, sqlDB
 }

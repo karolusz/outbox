@@ -23,19 +23,13 @@ func (o *Relay) eventProcessor(ctx context.Context, queue chan int64) {
 				continue
 			}
 			for _, pendingID := range pendingIDs {
+				// Back-pressure: a full queue blocks the producer rather
+				// than dropping IDs, so a slow publisher cannot silently
+				// discard work.
 				select {
 				case queue <- pendingID:
-					// enqueued successfully
 				case <-ctx.Done():
 					return
-					//	NOTE: We elect for the eventProcessor to get blocked if the event ID queue is full
-					// If required, we can change this to issue a warning and skip the event ID or
-					// implement some worker scaling, if it becomes a regular occurence
-					/*
-						default:
-							o.logger.Warn().Msg("eventProducer: queue is full, skipping event ID enqueue")
-							break enqueueLoop
-					*/
 				}
 			}
 		}

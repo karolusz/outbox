@@ -13,7 +13,7 @@ import (
 
 func TestConfig_DecodesYAML_AllFields(t *testing.T) {
 	in := []byte(`
-project: anyfin-prod
+project: my-gcp-project
 enable_message_ordering: true
 publish_timeout: 10s
 credentials:
@@ -23,7 +23,7 @@ credentials:
 	var cfg Config
 	require.NoError(t, yaml.Unmarshal(in, &cfg))
 
-	assert.Equal(t, "anyfin-prod", cfg.Project)
+	assert.Equal(t, "my-gcp-project", cfg.Project)
 	assert.True(t, cfg.EnableMessageOrdering)
 	assert.Equal(t, "10s", cfg.PublishTimeout.String())
 	assert.Equal(t, "file", cfg.Credentials.Type)
@@ -34,12 +34,12 @@ func TestConfig_DecodesYAML_MinimalConfig_DefaultsToADC(t *testing.T) {
 	// Only Project specified; credentials block omitted entirely.
 	// resolveCredentials should treat this as ADC (default).
 	in := []byte(`
-project: anyfin-prod
+project: my-gcp-project
 `)
 	var cfg Config
 	require.NoError(t, yaml.Unmarshal(in, &cfg))
 
-	assert.Equal(t, "anyfin-prod", cfg.Project)
+	assert.Equal(t, "my-gcp-project", cfg.Project)
 	assert.Equal(t, "", cfg.Credentials.Type, "missing credentials block should leave Type empty (treated as ADC)")
 }
 

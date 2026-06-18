@@ -134,30 +134,6 @@ func TestProcessOne_UnknownAddress_RecoverableAfterBookUpdate(t *testing.T) {
 	assert.Equal(t, 0, count, "after book update, the row publishes and is deleted")
 }
 
-// TestSinglePublisherAddressBook_Resolve_PassesAddressAsTarget exercises
-// the v0.1 migration aid: SinglePublisherAddressBook routes every
-// address straight to the supplied publisher with target=address.
-func TestSinglePublisherAddressBook_Resolve_PassesAddressAsTarget(t *testing.T) {
-	pub := fakePublisher{}
-	book := outbox.SinglePublisherAddressBook(pub)
-
-	gotPub, target, err := book.Resolve("any.address.you.like")
-	require.NoError(t, err)
-	assert.Equal(t, pub, gotPub)
-	assert.Equal(t, "any.address.you.like", target)
-}
-
-func TestSinglePublisherAddressBook_HasAlwaysTrue(t *testing.T) {
-	book := outbox.SinglePublisherAddressBook(fakePublisher{})
-	assert.True(t, book.Has("literally.anything"))
-	assert.True(t, book.Has(""))
-}
-
-func TestSinglePublisherAddressBook_ValidateAlwaysNil(t *testing.T) {
-	book := outbox.SinglePublisherAddressBook(fakePublisher{})
-	assert.NoError(t, book.Validate("literally.anything"))
-}
-
 // TestSetMetrics_NilRestoresNoop covers the contract that SetMetrics(nil)
 // restores the noop default rather than panicking later.
 func TestSetMetrics_NilRestoresNoop(t *testing.T) {

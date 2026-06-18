@@ -284,16 +284,6 @@ func TestAddressBook_Close_JoinsErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "c went boom")
 }
 
-// TestSinglePublisherAddressBook_Close closes the passthrough publisher.
-func TestSinglePublisherAddressBook_Close(t *testing.T) {
-	pub := &closingPublisher{name: "single"}
-	book := SinglePublisherAddressBook(pub)
-
-	require.NoError(t, book.Close(context.Background()))
-
-	assert.Equal(t, 1, pub.closes, "passthrough publisher should have been closed exactly once")
-}
-
 // TestAddressBook_Close_EmptyBookNoError covers the degenerate case where
 // the book is constructed with no publishers (would fail NewAddressBook
 // validation today, but the Close method should still be safe to call on
