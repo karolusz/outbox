@@ -4,7 +4,7 @@ publishers:
   - name: gcp-prod
     plugin: gcppubsub
     config:
-      project: anyfin-prod
+      project: my-gcp-project
       enable_message_ordering: true
       publish_timeout: 5s
       credentials:

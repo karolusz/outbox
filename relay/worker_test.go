@@ -33,6 +33,22 @@ func (f fakePublisher) Publish(c context.Context, target string, e *publisher.Me
 
 func (f fakePublisher) Close(ctx context.Context) error { return nil }
 
+// testBook returns an AddressBook routing the single seed-data address
+// ("my_topic" — used by every SQL fixture under relay/testdata/) to the
+// given publisher. Replaces the boilerplate of NewAddressBook +
+// WithPublisher + WithRoute when a test only needs one route.
+func testBook(t testing.TB, pub publisher.Publisher) *outbox.AddressBook {
+	t.Helper()
+	book, err := outbox.NewAddressBook(
+		outbox.WithPublisher("p", pub),
+		outbox.WithRoute("my_topic", outbox.Route{Publisher: "p", Target: "my_topic"}),
+	)
+	if err != nil {
+		t.Fatalf("testBook: %v", err)
+	}
+	return book
+}
+
 // TestWorker_ExitsOnQueueClose ensures the worker goroutine exits cleanly
 // when its queue is closed, leaving no goroutines behind.
 func TestWorker_ExitsOnQueueClose(t *testing.T) {
@@ -51,7 +67,7 @@ func TestWorker_ExitsOnQueueClose(t *testing.T) {
 			db:        db,
 			logger:    &testLogger,
 			workerCfg: &WorkerConfig{},
-			book:      outbox.SinglePublisherAddressBook(fakePublisher{publishFn: func(e *publisher.Message) error { return nil }}),
+			book:      testBook(t, fakePublisher{publishFn: func(e *publisher.Message) error { return nil }}),
 		}
 
 		queue := make(chan int64)
@@ -81,7 +97,7 @@ func TestWorker_ExitsOnContextCancel(t *testing.T) {
 		db:        db,
 		logger:    &testLogger,
 		workerCfg: &WorkerConfig{},
-		book:      outbox.SinglePublisherAddressBook(fakePublisher{publishFn: func(e *publisher.Message) error { return nil }}),
+		book:      testBook(t, fakePublisher{publishFn: func(e *publisher.Message) error { return nil }}),
 	}
 
 	queue := make(chan int64, 4)
@@ -120,7 +136,7 @@ func TestWorker_RecoversFromPanicAndContinues(t *testing.T) {
 		db:        db,
 		logger:    &testLogger,
 		workerCfg: &WorkerConfig{WorkerCount: 1},
-		book: outbox.SinglePublisherAddressBook(fakePublisher{
+		book: testBook(t, fakePublisher{
 			publishFn: func(e *publisher.Message) error {
 				if e.ID == 999 {
 					panic("simulated panic")
@@ -178,7 +194,7 @@ func TestProcessOne_PanicReturnsErrPanic(t *testing.T) {
 		db:        db,
 		logger:    &testLogger,
 		workerCfg: &WorkerConfig{},
-		book: outbox.SinglePublisherAddressBook(fakePublisher{
+		book: testBook(t, fakePublisher{
 			publishFn: func(e *publisher.Message) error { panic("boom") },
 		}),
 	}
@@ -284,7 +300,7 @@ func TestWorker_HandlesMultipleConsecutivePanics(t *testing.T) {
 	publishCount := 0
 	o := &Relay{
 		db: db, logger: &testLogger, workerCfg: &WorkerConfig{WorkerCount: 1},
-		book: outbox.SinglePublisherAddressBook(fakePublisher{
+		book: testBook(t, fakePublisher{
 			publishFn: func(e *publisher.Message) error {
 				publishCount++
 				if publishCount <= 2 {
@@ -341,7 +357,7 @@ func TestWorker_DoesNotMarkOnNormalPublishError(t *testing.T) {
 
 	o := &Relay{
 		db: db, logger: &testLogger, workerCfg: &WorkerConfig{WorkerCount: 1},
-		book: outbox.SinglePublisherAddressBook(fakePublisher{
+		book: testBook(t, fakePublisher{
 			publishFn: func(e *publisher.Message) error {
 				return fmt.Errorf("simulated publish error (NOT a panic)")
 			},
@@ -392,7 +408,7 @@ func TestWorker_PanicsBoundedByRetryLimit(t *testing.T) {
 	publishCount := 0
 	o := &Relay{
 		db: db, logger: &testLogger, workerCfg: &WorkerConfig{WorkerCount: 1},
-		book: outbox.SinglePublisherAddressBook(fakePublisher{
+		book: testBook(t, fakePublisher{
 			publishFn: func(e *publisher.Message) error {
 				publishCount++
 				panic("always panic")
@@ -494,7 +510,7 @@ func TestProcessOne_PublishTimeout_IncrementsRetryCount(t *testing.T) {
 	o := &Relay{
 		db:     db,
 		logger: &testLogger,
-		book:   outbox.SinglePublisherAddressBook(pub),
+		book:   testBook(t, pub),
 		workerCfg: &WorkerConfig{
 			PublishTimeout: 100 * time.Millisecond,
 		},
@@ -547,7 +563,7 @@ func TestProcessOne_ParentCtxCanceled_DoesNotBurnRetry(t *testing.T) {
 	o := &Relay{
 		db:     db,
 		logger: &testLogger,
-		book:   outbox.SinglePublisherAddressBook(pub),
+		book:   testBook(t, pub),
 		workerCfg: &WorkerConfig{
 			PublishTimeout: 10 * time.Second, // long; we want parent cancel to fire first
 		},

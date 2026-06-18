@@ -122,9 +122,7 @@ func WithoutBookClose() Option {
 // worker config. Metrics default to a no-op implementation; override via
 // SetMetrics if you want them wired to your observability stack.
 //
-// The book must be non-nil. Adopters with a single publisher who want
-// v0.1-style "address = broker target" semantics should pass
-// outbox.SinglePublisherAddressBook(pub).
+// The book must be non-nil and have at least one route registered.
 //
 // Optional arguments via Option (e.g. WithDBSchema) configure adopter-
 // specific overrides; default values are sensible.

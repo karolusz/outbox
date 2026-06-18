@@ -27,18 +27,9 @@ type Route struct {
 //
 // AddressBook is safe for concurrent reads. There is no public write API
 // after NewAddressBook returns.
-//
-// A book constructed via SinglePublisherAddressBook behaves differently:
-// every Resolve returns the configured publisher with target equal to the
-// address. This is a v0.1 migration aid; the routes/publishers maps are
-// empty in that mode.
 type AddressBook struct {
 	routes     map[string]Route
 	publishers map[string]publisher.Publisher
-
-	// passthrough, when non-nil, makes Resolve return (passthrough, address, nil)
-	// for any address. Set only by SinglePublisherAddressBook.
-	passthrough publisher.Publisher
 }
 
 // addressBookConfig is the internal accumulator passed through options.
@@ -198,14 +189,7 @@ func validateRouteTargets(cfg *addressBookConfig) []error {
 // Resolve looks up an address and returns its Publisher instance and the
 // broker target the publisher should write to. Returns an error wrapping
 // ErrUnknownAddress when the address is not registered.
-//
-// In a single-publisher book (see SinglePublisherAddressBook), every
-// address resolves to the configured publisher with target equal to the
-// address. The address is otherwise opaque to the book.
 func (b *AddressBook) Resolve(address string) (publisher.Publisher, string, error) {
-	if b.passthrough != nil {
-		return b.passthrough, address, nil
-	}
 	route, ok := b.routes[address]
 	if !ok {
 		return nil, "", fmt.Errorf("%w: %q", ErrUnknownAddress, address)
@@ -220,12 +204,8 @@ func (b *AddressBook) Resolve(address string) (publisher.Publisher, string, erro
 	return pub, route.Target, nil
 }
 
-// Has reports whether the given address is registered. In a single-
-// publisher book, every address is considered registered.
+// Has reports whether the given address is registered.
 func (b *AddressBook) Has(address string) bool {
-	if b.passthrough != nil {
-		return true
-	}
 	_, ok := b.routes[address]
 	return ok
 }
@@ -242,23 +222,7 @@ func (b *AddressBook) Validate(address string) error {
 	return nil
 }
 
-// SinglePublisherAddressBook is a v0.1 migration aid that returns an
-// AddressBook routing every address to the supplied Publisher, with
-// target equal to the address itself. The book has no validated routes;
-// Has returns true for every address.
-//
-// Use this when migrating from a v0.1-style setup where a single
-// Publisher served every message and msg.Address was the broker target
-// verbatim. For new setups, prefer NewAddressBook or LoadAddressBook so
-// addresses and targets are explicitly mapped — that decoupling is the
-// whole point of the address book.
-func SinglePublisherAddressBook(p publisher.Publisher) *AddressBook {
-	return &AddressBook{passthrough: p}
-}
-
 // Close releases every Publisher in the book by calling its Close method.
-// Closes the passthrough publisher (if set, from SinglePublisherAddressBook)
-// AND every publisher registered via WithPublisher or LoadAddressBook.
 //
 // Close should be called once by the adopter after the relay has stopped
 // (typically `defer book.Close(ctx)` immediately after the book is
@@ -284,11 +248,6 @@ func SinglePublisherAddressBook(p publisher.Publisher) *AddressBook {
 // `<-r.Start(ctx)` first.
 func (b *AddressBook) Close(ctx context.Context) error {
 	var errs []error
-	if b.passthrough != nil {
-		if err := b.passthrough.Close(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("close passthrough publisher: %w", err))
-		}
-	}
 	for name, pub := range b.publishers {
 		if err := pub.Close(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("close publisher %q: %w", name, err))
