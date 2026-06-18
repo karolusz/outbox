@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/karolusz/outbox"
+	"github.com/karolusz/outbox/internal/testutils"
+	"github.com/karolusz/outbox/publisher"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -164,4 +166,100 @@ func TestSetMetrics_NilRestoresNoop(t *testing.T) {
 	require.NotNil(t, o.metrics, "SetMetrics(nil) must install a non-nil noop metrics impl")
 	// Calling a method shouldn't panic.
 	o.metrics.IncUnknownAddress("anything")
+}
+
+// closeTrackingPublisher counts Close calls. Pointer-based so the
+// counter is shared with the AddressBook (which holds an interface
+// value, but the pointer receiver lets the counter outlive the copy).
+type closeTrackingPublisher struct {
+	closes int
+}
+
+func (p *closeTrackingPublisher) Publish(_ context.Context, _ string, _ *publisher.Message) error {
+	return nil
+}
+func (p *closeTrackingPublisher) Close(_ context.Context) error {
+	p.closes++
+	return nil
+}
+
+// TestStart_ClosesBookOnShutdown verifies the relay calls
+// AddressBook.Close after workers drain — the load-bearing behavior for
+// publisher cleanup. Without this, broker SDK goroutines and connections
+// would leak on every relay shutdown.
+func TestStart_ClosesBookOnShutdown(t *testing.T) {
+	db, _, cleanup := testutils.SetupMockDB(t)
+	defer cleanup()
+
+	pub := &closeTrackingPublisher{}
+	book, err := outbox.NewAddressBook(
+		outbox.WithPublisher("p", pub),
+		outbox.WithRoute("any.v1", outbox.Route{Publisher: "p", Target: "t"}),
+	)
+	require.NoError(t, err)
+
+	testLogger := testutils.NewTestLogger(t)
+	r := New(db, &testLogger, book, &WorkerConfig{
+		WorkerCount:     1,
+		QueueSize:       1,
+		BatchSize:       1,
+		TickPeriod:      10 * time.Millisecond,
+		PublishTimeout:  100 * time.Millisecond,
+		ShutdownTimeout: 100 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	done := r.Start(ctx)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay did not exit after ctx cancel")
+	}
+
+	require.Equal(t, 1, pub.closes, "Start MUST call AddressBook.Close on shutdown")
+}
+
+// TestStart_RespectsWithoutBookClose verifies the opt-out: when the
+// relay is constructed with WithoutBookClose, Start does NOT call
+// book.Close. The adopter is responsible for closing the book.
+func TestStart_RespectsWithoutBookClose(t *testing.T) {
+	db, _, cleanup := testutils.SetupMockDB(t)
+	defer cleanup()
+
+	pub := &closeTrackingPublisher{}
+	book, err := outbox.NewAddressBook(
+		outbox.WithPublisher("p", pub),
+		outbox.WithRoute("any.v1", outbox.Route{Publisher: "p", Target: "t"}),
+	)
+	require.NoError(t, err)
+
+	testLogger := testutils.NewTestLogger(t)
+	r := New(db, &testLogger, book, &WorkerConfig{
+		WorkerCount:     1,
+		QueueSize:       1,
+		BatchSize:       1,
+		TickPeriod:      10 * time.Millisecond,
+		PublishTimeout:  100 * time.Millisecond,
+		ShutdownTimeout: 100 * time.Millisecond,
+	}, WithoutBookClose())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	done := r.Start(ctx)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay did not exit after ctx cancel")
+	}
+
+	require.Equal(t, 0, pub.closes, "WithoutBookClose MUST suppress the relay's automatic book close")
+
+	// Adopter is now expected to call it explicitly.
+	require.NoError(t, book.Close(context.Background()))
+	require.Equal(t, 1, pub.closes, "explicit book.Close should still work for opt-out adopters")
 }

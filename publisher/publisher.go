@@ -63,11 +63,29 @@ import "context"
 // # Close
 //
 // Close releases any resources the publisher holds — broker connections,
-// background batching goroutines, network sockets. The relay calls Close
-// once per Publisher at shutdown after all workers have drained. Plugins
-// with nothing to release return nil. Implementations SHOULD honor ctx
-// for the close operation but MAY ignore it if their underlying SDK's
-// Close call does not accept one.
+// background batching goroutines, network sockets. It is invoked by the
+// adopter via AddressBook.Close after the relay has stopped; the relay
+// itself does NOT close publishers (ownership stays with whoever
+// constructed the AddressBook, matching Go's database/sql pattern).
+//
+// Implementations MUST:
+//
+//   - Be idempotent. Adopters may call Close more than once (defensive
+//     defers, multiple AddressBook references to the same publisher).
+//     A second Close must not panic and should return nil or a clear
+//     "already closed" error.
+//
+//   - Block until in-flight publishes have flushed or the underlying
+//     SDK has given up. Returning before background goroutines finish
+//     means the adopter has no signal that it is safe to exit.
+//
+//   - Honor ctx as best-effort. If ctx.Done() fires before flush is
+//     complete, return ctx.Err() and abandon in-flight work. SDKs whose
+//     own Close does not accept a ctx (some Pub/Sub generations, MQTT
+//     libraries) may ignore the deadline; adopters who pass a tight
+//     ctx accept that those SDKs may flush past it.
+//
+// Plugins with no resources to release return nil immediately.
 type Publisher interface {
 	Publish(ctx context.Context, target string, msg *Message) error
 	Close(ctx context.Context) error

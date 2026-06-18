@@ -209,3 +209,117 @@ func TestAddressBook_MultipleRoutesShareOnePublisher(t *testing.T) {
 	assert.Equal(t, pubA, pubB)
 	assert.Equal(t, pubB, pubC)
 }
+
+// closingPublisher is a stub that records each Close call and can be
+// configured to return an error. Pointer-based so the counter is
+// shared across copies passed by value through WithPublisher.
+type closingPublisher struct {
+	name     string
+	closes   int
+	closeErr error
+}
+
+func (p *closingPublisher) Publish(ctx context.Context, target string, msg *Message) error {
+	return nil
+}
+func (p *closingPublisher) Close(ctx context.Context) error {
+	p.closes++
+	return p.closeErr
+}
+
+// TestAddressBook_Close_ClosesEveryPublisher verifies that AddressBook.Close
+// calls Close on every Publisher registered via WithPublisher.
+func TestAddressBook_Close_ClosesEveryPublisher(t *testing.T) {
+	pubA := &closingPublisher{name: "a"}
+	pubB := &closingPublisher{name: "b"}
+	pubC := &closingPublisher{name: "c"}
+
+	book, err := NewAddressBook(
+		WithPublisher("a", pubA),
+		WithPublisher("b", pubB),
+		WithPublisher("c", pubC),
+		WithRoute("event.a.v1", Route{Publisher: "a", Target: "topic-a"}),
+		WithRoute("event.b.v1", Route{Publisher: "b", Target: "topic-b"}),
+		WithRoute("event.c.v1", Route{Publisher: "c", Target: "topic-c"}),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, book.Close(context.Background()))
+
+	assert.Equal(t, 1, pubA.closes, "publisher a should have been closed exactly once")
+	assert.Equal(t, 1, pubB.closes, "publisher b should have been closed exactly once")
+	assert.Equal(t, 1, pubC.closes, "publisher c should have been closed exactly once")
+}
+
+// TestAddressBook_Close_JoinsErrors verifies that errors from individual
+// publishers are aggregated via errors.Join and that Close attempts every
+// publisher even if earlier ones errored.
+func TestAddressBook_Close_JoinsErrors(t *testing.T) {
+	pubA := &closingPublisher{name: "a", closeErr: errors.New("a went boom")}
+	pubB := &closingPublisher{name: "b"} // succeeds
+	pubC := &closingPublisher{name: "c", closeErr: errors.New("c went boom")}
+
+	book, err := NewAddressBook(
+		WithPublisher("a", pubA),
+		WithPublisher("b", pubB),
+		WithPublisher("c", pubC),
+		WithRoute("event.x.v1", Route{Publisher: "a", Target: "topic-a"}),
+		WithRoute("event.y.v1", Route{Publisher: "b", Target: "topic-b"}),
+		WithRoute("event.z.v1", Route{Publisher: "c", Target: "topic-c"}),
+	)
+	require.NoError(t, err)
+
+	err = book.Close(context.Background())
+	require.Error(t, err)
+
+	// Each publisher should have been attempted even though some errored.
+	assert.Equal(t, 1, pubA.closes)
+	assert.Equal(t, 1, pubB.closes)
+	assert.Equal(t, 1, pubC.closes)
+
+	// Both error messages should be present in the joined error.
+	assert.Contains(t, err.Error(), `close publisher "a"`)
+	assert.Contains(t, err.Error(), "a went boom")
+	assert.Contains(t, err.Error(), `close publisher "c"`)
+	assert.Contains(t, err.Error(), "c went boom")
+}
+
+// TestSinglePublisherAddressBook_Close closes the passthrough publisher.
+func TestSinglePublisherAddressBook_Close(t *testing.T) {
+	pub := &closingPublisher{name: "single"}
+	book := SinglePublisherAddressBook(pub)
+
+	require.NoError(t, book.Close(context.Background()))
+
+	assert.Equal(t, 1, pub.closes, "passthrough publisher should have been closed exactly once")
+}
+
+// TestAddressBook_Close_EmptyBookNoError covers the degenerate case where
+// the book is constructed with no publishers (would fail NewAddressBook
+// validation today, but the Close method should still be safe to call on
+// a zero AddressBook).
+func TestAddressBook_Close_EmptyBookNoError(t *testing.T) {
+	book := &AddressBook{}
+	require.NoError(t, book.Close(context.Background()))
+}
+
+// TestAddressBook_Close_Idempotent verifies that calling Close twice does
+// not panic; the second call invokes Close on each publisher again, and
+// since stub publishers tolerate multiple Closes, both calls succeed.
+// This documents the AddressBook side of the idempotency expectation —
+// the per-Publisher idempotency requirement lives in the Publisher
+// interface contract.
+func TestAddressBook_Close_Idempotent(t *testing.T) {
+	pub := &closingPublisher{name: "a"}
+
+	book, err := NewAddressBook(
+		WithPublisher("a", pub),
+		WithRoute("event.a.v1", Route{Publisher: "a", Target: "topic-a"}),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, book.Close(context.Background()))
+	require.NoError(t, book.Close(context.Background()))
+
+	assert.Equal(t, 2, pub.closes, "Close was called twice on the book, so per-publisher Close should also have been invoked twice")
+}
