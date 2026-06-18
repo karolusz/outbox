@@ -80,6 +80,7 @@ func teardownTest(t *testing.T, db *sqlx.DB, schema string) {
 // TestOutbox_EmitsEventsFromOutboxTable confirms the relay publishes a
 // pre-seeded batch of rows.
 func TestOutbox_EmitsEventsFromOutboxTable(t *testing.T) {
+	defer testutils.NoGoroutineLeak(t)
 	seedSQLFile := "emitseventsfromoutboxtable.sql"
 
 	workerConfig := &relay.WorkerConfig{
@@ -122,6 +123,11 @@ receiveLoop:
 // TestOutbox_EmitsEventsAsTheyCome confirms the relay picks up new rows
 // inserted while it is already running.
 func TestOutbox_EmitsEventsAsTheyCome(t *testing.T) {
+	// Registered first; runs LAST when this function returns, AFTER the
+	// inserter-goroutine wait below. Verifies no goroutines (relay
+	// workers, eventProcessor, inserter) are still alive.
+	defer testutils.NoGoroutineLeak(t)
+
 	workerConfig := &relay.WorkerConfig{
 		WorkerCount: MaxWorkersCount,
 		QueueSize:   500,
@@ -135,8 +141,19 @@ func TestOutbox_EmitsEventsAsTheyCome(t *testing.T) {
 
 	relayComplete := relay.Start(ctx)
 
+	// Spawn the inserter goroutine and track its lifetime via a done
+	// channel. Registered AFTER the leak-check defer so the
+	// wait-for-inserter runs FIRST when the test returns (LIFO defer
+	// order). Without this, the inserter goroutine can outlive the
+	// test, hit a closed DB in t.Cleanup, and either panic or be flagged
+	// as a leak.
 	const messagesToInsert = 40
-	go insertOutboxEvents(t, db, messagesToInsert, 10*time.Second)
+	inserterDone := make(chan struct{})
+	go func() {
+		defer close(inserterDone)
+		insertOutboxEvents(ctx, t, db, messagesToInsert, 10*time.Second)
+	}()
+	defer func() { <-inserterDone }()
 
 	received := 0
 receiveLoop:
@@ -156,21 +173,41 @@ receiveLoop:
 	assert.Equal(t, messagesToInsert, received, "not all events were published successfully")
 }
 
-func insertOutboxEvents(t *testing.T, db *sqlx.DB, count int, totalTime time.Duration) {
+// insertOutboxEvents inserts `count` rows into outbox.messages, paced
+// evenly across `totalTime`. Returns early if ctx is canceled — callers
+// MUST pass a cancellable ctx and wait for the goroutine to exit before
+// allowing test cleanup (closed DB → panic).
+func insertOutboxEvents(ctx context.Context, t *testing.T, db *sqlx.DB, count int, totalTime time.Duration) {
 	t.Helper()
+	interval := totalTime / time.Duration(count)
 	for i := range count {
-		db.MustExec(
+		if ctx.Err() != nil {
+			return
+		}
+		_, err := db.ExecContext(
+			ctx,
 			`INSERT INTO outbox.messages (data, headers, address, ordering_key)
 			 VALUES (decode('48656c6c6f20576f726c64', 'hex'), '{"foo":"bar"}', 'test_topic', $1)`,
 			i,
 		)
-		time.Sleep(totalTime / time.Duration(count))
+		if err != nil && ctx.Err() == nil {
+			// Surface real errors but don't fail the test on
+			// ctx-canceled errors (those are the graceful-exit
+			// path).
+			t.Logf("insertOutboxEvents: insert %d: %v", i, err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
 	}
 }
 
 // TestOutbox_IncrementsRetryCounter confirms the relay increments retry_count
 // on each failed publish attempt until the retry_limit is reached.
 func TestOutbox_IncrementsRetryCounter(t *testing.T) {
+	defer testutils.NoGoroutineLeak(t)
 	workerConfig := &relay.WorkerConfig{
 		WorkerCount: MaxWorkersCount,
 		QueueSize:   500,

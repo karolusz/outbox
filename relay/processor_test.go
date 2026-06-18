@@ -57,6 +57,7 @@ func teardownTest(t *testing.T, db *sqlx.DB, schema string) {
 // TestEventProcessor_CanEnqueueIDs ensures that the event processor correctly
 // enqueues IDs from the database.
 func TestEventProcessor_CanEnqueueIDs(t *testing.T) {
+	defer testutils.NoGoroutineLeak(t)
 	// Setup outside timeout — DB schema creation + seeding takes variable time
 	// in CI and should not eat into the test budget.
 	db, testLogger := setupTest(t, "TestEventProcessor_CanEnqueueIDs", "eventProcessor_CanEnqueueIDs.sql")
@@ -101,6 +102,7 @@ func TestEventProcessor_CanEnqueueIDs(t *testing.T) {
 // the channel send by design (back-pressure); the select-on-ctx.Done()
 // in the enqueue loop is what releases it.
 func TestEventProcessor_QueueFullBlocksThenExitsOnCtx(t *testing.T) {
+	defer testutils.NoGoroutineLeak(t)
 	db, _ := setupTest(t, "TestEventProcessor_QueueFullBlocksThenExitsOnCtx", "eventProcessor_CanEnqueueIDs.sql")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
