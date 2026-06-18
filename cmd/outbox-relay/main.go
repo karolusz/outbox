@@ -83,6 +83,9 @@ func run(addrBookPath, dbEnvVar, dbSchema, logLevel string) error {
 	}
 	logger.Info().Str("path", addrBookPath).Msg("address book loaded")
 
+	// The relay closes the book (and flushes publishers) automatically
+	// after Start returns. See relay.WorkerConfig.ShutdownTimeout and
+	// relay.WithoutBookClose for the knobs.
 	r := relay.New(db, &logger, book, nil, relay.WithDBSchema(dbSchema))
 
 	sig := make(chan os.Signal, 1)

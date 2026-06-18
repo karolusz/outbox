@@ -1,6 +1,7 @@
 package outbox
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -253,4 +254,45 @@ func (b *AddressBook) Validate(address string) error {
 // whole point of the address book.
 func SinglePublisherAddressBook(p publisher.Publisher) *AddressBook {
 	return &AddressBook{passthrough: p}
+}
+
+// Close releases every Publisher in the book by calling its Close method.
+// Closes the passthrough publisher (if set, from SinglePublisherAddressBook)
+// AND every publisher registered via WithPublisher or LoadAddressBook.
+//
+// Close should be called once by the adopter after the relay has stopped
+// (typically `defer book.Close(ctx)` immediately after the book is
+// constructed). It is the adopter's responsibility — the relay does NOT
+// close the book on Start's return, because adopters may want to share
+// the book across multiple Start cycles or with a producer-side validator.
+//
+// Errors from individual publisher Close calls are joined via
+// errors.Join and returned together; the publisher key (or "passthrough")
+// is included in each wrapped error so adopters can correlate failures
+// back to their YAML config. Close attempts to close every publisher
+// even if earlier ones errored.
+//
+// Adopters who care about flush time during shutdown should pass a
+// context.Background() derivative with a deadline (e.g. 30s) rather
+// than the relay's parent ctx — the parent ctx is already canceled by
+// the time Start returns, and broker SDKs that honor ctx would abandon
+// in-flight work immediately.
+//
+// Calling Close more than once is safe (each Publisher.Close should be
+// idempotent — see the Publisher interface contract). However Close is
+// not safe to call concurrently with the relay's workers; await
+// `<-r.Start(ctx)` first.
+func (b *AddressBook) Close(ctx context.Context) error {
+	var errs []error
+	if b.passthrough != nil {
+		if err := b.passthrough.Close(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("close passthrough publisher: %w", err))
+		}
+	}
+	for name, pub := range b.publishers {
+		if err := pub.Close(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("close publisher %q: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
 }

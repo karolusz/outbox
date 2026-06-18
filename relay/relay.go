@@ -60,6 +60,17 @@ type WorkerConfig struct {
 	// shorter deadline wins automatically because ctx chains compose
 	// that way.
 	PublishTimeout time.Duration
+
+	// ShutdownTimeout caps how long the relay waits for AddressBook.Close
+	// to flush publisher buffers after workers have stopped. Used by
+	// Start to derive a fresh context.Background()+timeout for the
+	// Close call — the parent ctx is already canceled by this point,
+	// and propagating that cancellation would force broker SDKs to
+	// abandon in-flight work instead of flushing.
+	//
+	// Zero or negative values are treated as "use the default" (30s).
+	// Ignored when the relay was constructed with WithoutBookClose.
+	ShutdownTimeout time.Duration
 }
 
 type Relay struct {
@@ -70,6 +81,13 @@ type Relay struct {
 	book      *outbox.AddressBook
 	metrics   Metrics
 	workerCfg *WorkerConfig
+
+	// closeBook controls whether Start calls o.book.Close after workers
+	// drain. Default true (the relay owns publisher lifetimes for the
+	// duration of Start); flipped to false by WithoutBookClose for
+	// adopters who want to reuse the book across Start cycles or share
+	// it with a producer-side validator.
+	closeBook bool
 }
 
 // Option configures a Relay at construction time. Passed to New as a
@@ -82,6 +100,22 @@ type Option func(*Relay)
 // leave it alone.
 func WithDBSchema(name string) Option {
 	return func(r *Relay) { r.dbSchema = name }
+}
+
+// WithoutBookClose tells the relay NOT to call AddressBook.Close after
+// Start returns. Use this when the adopter retains ownership of the
+// book — e.g. sharing it with a producer-side validator, reusing it
+// across multiple Start cycles, or doing custom flush coordination.
+//
+// Default behavior (without this option): the relay closes the book on
+// shutdown using a fresh context.Background()+ShutdownTimeout (default
+// 30s), absorbing the subtle ctx-handling that adopters writing their
+// own main would otherwise need to get right.
+//
+// Adopters who use WithoutBookClose are responsible for calling
+// book.Close themselves at the appropriate point in their lifecycle.
+func WithoutBookClose() Option {
+	return func(r *Relay) { r.closeBook = false }
 }
 
 // New constructs the relay with the given DB, logger, address book, and
@@ -103,16 +137,19 @@ func New(db *sqlx.DB, logger *zerolog.Logger, book *outbox.AddressBook, workerCo
 			TickPeriod:        2 * time.Second,
 			LeewayDurationSec: 5,
 			PublishTimeout:    30 * time.Second,
+			ShutdownTimeout:   30 * time.Second,
 		}
 	}
-	// Normalize the publish-timeout safety net. The worker-level timeout
-	// is not opt-in (see WorkerConfig.PublishTimeout godoc); zero or
-	// negative is rewritten to the default 30s rather than honored as
-	// "disable." We copy the struct so adopter-supplied configs aren't
-	// mutated under them.
+	// Normalize the safety-net timeouts. Both are non-opt-in (zero is
+	// rewritten to the default rather than honored as "disable"). We
+	// copy the struct so adopter-supplied configs aren't mutated under
+	// them.
 	cfg := *workerConfig
 	if cfg.PublishTimeout <= 0 {
 		cfg.PublishTimeout = 30 * time.Second
+	}
+	if cfg.ShutdownTimeout <= 0 {
+		cfg.ShutdownTimeout = 30 * time.Second
 	}
 	workerConfig = &cfg
 	r := Relay{
@@ -122,6 +159,7 @@ func New(db *sqlx.DB, logger *zerolog.Logger, book *outbox.AddressBook, workerCo
 		book:      book,
 		metrics:   noopMetrics{},
 		workerCfg: workerConfig,
+		closeBook: true, // default: relay owns publisher lifetimes
 	}
 	for _, opt := range opts {
 		opt(&r)
@@ -186,7 +224,23 @@ func (o *Relay) Start(ctx context.Context) <-chan struct{} {
 		close(queue)
 
 		wg.Wait() // wait for all workers to finish
-		o.logger.Debug().Msg("relay: all workers stopped, exiting")
+		o.logger.Debug().Msg("relay: all workers stopped")
+
+		// Flush publishers via AddressBook.Close unless the adopter
+		// opted out via WithoutBookClose. We derive a fresh ctx (NOT
+		// the relay's parent ctx, which is already canceled by this
+		// point) so broker SDKs that honor ctx don't immediately
+		// abandon in-flight work — they get up to ShutdownTimeout to
+		// flush. After ShutdownTimeout, the deadline fires and the
+		// SDKs propagate that downward to whatever they were doing.
+		if o.closeBook && o.book != nil {
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), o.workerCfg.ShutdownTimeout)
+			defer closeCancel()
+			if err := o.book.Close(closeCtx); err != nil {
+				o.logger.Warn().Err(err).Msg("relay: address book close returned errors")
+			}
+		}
+		o.logger.Debug().Msg("relay: exiting")
 	}()
 	return completeChan
 }
