@@ -94,7 +94,7 @@ func run(addrBookPath, dbEnvVar, dbSchema, logLevel string) error {
 	}()
 
 	logger.Info().Str("schema", dbSchema).Msg("relay starting")
-	<-r.Start(ctx, nil)
+	<-r.Start(ctx)
 	logger.Info().Msg("relay stopped")
 
 	if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {

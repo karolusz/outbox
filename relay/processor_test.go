@@ -12,7 +12,6 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/karolusz/outbox/internal/testutils"
 	"github.com/rs/zerolog"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -77,7 +76,7 @@ func TestEventProcessor_CanEnqueueIDs(t *testing.T) {
 
 	queue := make(chan int64, 2)
 
-	go o.eventProcessor(ctx, queue, nil)
+	go o.eventProcessor(ctx, queue)
 
 	var processed []int64
 	select {
@@ -96,17 +95,19 @@ func TestEventProcessor_CanEnqueueIDs(t *testing.T) {
 	require.ElementsMatch(t, []int64{100, 101}, processed)
 }
 
-// TestEventProcessor_QueueFullSkipsEnqueue ensures that when the queue is full,
-// the processor doesn't panic.
-func TestEventProcessor_QueueFullSkipsEnqueue(t *testing.T) {
-	db, _ := setupTest(t, "TestEventProcessor_QueueFullLogsWarning", "eventProcessor_CanEnqueueIDs.sql")
+// TestEventProcessor_QueueFullBlocksThenExitsOnCtx confirms that when the
+// queue is full and the processor cannot enqueue any more IDs, it still
+// exits cleanly once the parent ctx is canceled. The processor blocks on
+// the channel send by design (back-pressure); the select-on-ctx.Done()
+// in the enqueue loop is what releases it.
+func TestEventProcessor_QueueFullBlocksThenExitsOnCtx(t *testing.T) {
+	db, _ := setupTest(t, "TestEventProcessor_QueueFullBlocksThenExitsOnCtx", "eventProcessor_CanEnqueueIDs.sql")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
 	queue := make(chan int64, 1)
 
-	// Capture logs in a buffer
 	var logBuf bytes.Buffer
 	logger := zerolog.New(&logBuf).Level(zerolog.DebugLevel).With().Timestamp().Logger()
 
@@ -120,18 +121,19 @@ func TestEventProcessor_QueueFullSkipsEnqueue(t *testing.T) {
 		},
 	}
 
-	// Pre-fill the queue to force "queue full"
+	// Pre-fill the queue so the processor's send blocks.
 	queue <- 999
 
-	heartbeatCount := 0
-	beatCounter := func() error {
-		heartbeatCount++
-		return nil
+	done := make(chan struct{})
+	go func() {
+		o.eventProcessor(ctx, queue)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// processor exited within the ctx timeout window
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("eventProcessor did not exit when ctx canceled while queue was full")
 	}
-
-	go o.eventProcessor(ctx, queue, beatCounter)
-
-	time.Sleep(50 * time.Millisecond)
-
-	assert.Less(t, heartbeatCount, 2, "heartbeat should have been called at most once")
 }

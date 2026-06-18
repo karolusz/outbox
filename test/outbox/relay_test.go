@@ -99,7 +99,7 @@ func TestOutbox_EmitsEventsFromOutboxTable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	relayComplete := relay.Start(ctx, nil)
+	relayComplete := relay.Start(ctx)
 
 	received := 0
 receiveLoop:
@@ -133,7 +133,7 @@ func TestOutbox_EmitsEventsAsTheyCome(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	relayComplete := relay.Start(ctx, nil)
+	relayComplete := relay.Start(ctx)
 
 	const messagesToInsert = 40
 	go insertOutboxEvents(t, db, messagesToInsert, 10*time.Second)
@@ -191,7 +191,7 @@ func TestOutbox_IncrementsRetryCounter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	relayComplete := relay.Start(ctx, nil)
+	relayComplete := relay.Start(ctx)
 
 	received := 0
 receiveLoop:
