@@ -161,7 +161,7 @@ func TestLoadAddressBook_GcppubsubConfigPassedThrough(t *testing.T) {
 
 func TestLoadAddressBook_UserOptOverlap_StillErrors(t *testing.T) {
 	// User-supplied opt registers the same publisher name as YAML.
-	// v0.2 does not support override semantics; this is reported as a
+	// Override semantics are not supported; this is reported as a
 	// duplicate.
 	loaderTestSetup(t)
 

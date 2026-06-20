@@ -1,6 +1,4 @@
-// A repository like methods for internal use by the outbox relay worker.
-// This would be the repo layer in layered architecture but it was deemed
-// unnecessary to create a separate package for just this for the outbox.
+// Repository-like helpers used internally by the relay worker.
 package relay
 
 import (
@@ -24,16 +22,10 @@ type Executor interface {
 	Exec(query string, arg ...any) (sql.Result, error)
 }
 
-// Each repository function builds its SQL with the schema-qualified
-// table name `${dbSchema}.messages`. The schema is configurable via
-// relay.WithDBSchema; default "outbox" (see relay.go). For test
-// convenience, an empty schema string also resolves to "outbox" — tests
-// that construct &Relay{...} literals without explicitly setting
-// dbSchema get the same behaviour as production.
-//
-// SQL is built per call via fmt.Sprintf. The cost is small (a handful
-// of allocs per call, dominated by the network round-trip to Postgres)
-// and the code stays straightforward.
+// Each query builds its SQL with the schema-qualified table name
+// `${dbSchema}.messages`. The schema is configurable via WithDBSchema;
+// default "outbox". For test convenience, an empty string also resolves
+// to "outbox".
 
 // schemaOr returns the given schema name, or "outbox" if empty.
 func schemaOr(s string) string {
@@ -120,21 +112,15 @@ func setLastAttemptedAt(tx *sqlx.Tx, dbSchema string, id int64) error {
 }
 
 // tryIncrementRetryCount increments retry_count and last_attempted_at
-// for the row, but only if both:
-//   - the row is NOT currently locked by another transaction, AND
-//   - retry_count is still below retry_limit.
-//
-// Returns:
+// for the row, but only if the row is not currently locked by another
+// transaction AND retry_count is still below retry_limit. Returns:
 //   - (true, nil)  → the increment was applied
-//   - (false, nil) → skipped (row locked by another worker, OR already at
-//     retry_limit — the cap matches the poll query's WHERE clause so we
-//     don't push a row past the limit through the panic-marking path)
+//   - (false, nil) → skipped (row locked or already at retry_limit)
 //   - (false, err) → query error
 //
-// Implementation: a CTE filters on (row not locked) AND (retry_count <
-// retry_limit) using `FOR NO KEY UPDATE SKIP LOCKED`. If either
-// predicate rules the row out, the CTE returns empty and the UPDATE
-// affects zero rows — without blocking.
+// Implementation: a CTE filters on both predicates via FOR NO KEY
+// UPDATE SKIP LOCKED. If either rules the row out, the CTE returns
+// empty and the UPDATE affects zero rows — without blocking.
 func tryIncrementRetryCount(tx *sqlx.Tx, dbSchema string, id int64) (bool, error) {
 	var returnedID int64
 	query := fmt.Sprintf(`

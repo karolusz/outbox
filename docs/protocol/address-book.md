@@ -107,7 +107,7 @@ The fake publisher records messages in memory. Useful for tests and "soft launch
 
 ## Where the file lives
 
-Operationally, mount the file as a ConfigMap (k8s) or bind-mount it into the relay container (Docker). The relay binary reads it once at startup; there is no hot-reload in v1.
+Operationally, mount the file as a ConfigMap (k8s) or bind-mount it into the relay container (Docker). The relay reads it once at startup; there is no hot-reload.
 
 For the lib-shipped `cmd/outbox-relay`, the default path is `/etc/outbox/addressbook.yaml`. Override via `--addressbook=/path/to/file.yaml`.
 

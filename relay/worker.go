@@ -160,7 +160,6 @@ func (o *Relay) processOne(ctx context.Context, logger zerolog.Logger, id int64)
 	pub, target, resolveErr := o.book.Resolve(outboxEvent.Address)
 	if errors.Is(resolveErr, outbox.ErrUnknownAddress) {
 		logger.Error().Str("address", outboxEvent.Address).Msg("unknown address; preserving row for retry once address book is updated")
-		o.metrics.IncUnknownAddress(outboxEvent.Address)
 		if updateErr := setLastAttemptedAt(tx, o.dbSchema, outboxEvent.ID); updateErr != nil {
 			return fmt.Errorf("set last_attempted_at for unknown-address row: %w", updateErr)
 		}

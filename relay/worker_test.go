@@ -514,7 +514,6 @@ func TestProcessOne_PublishTimeout_IncrementsRetryCount(t *testing.T) {
 		workerCfg: &WorkerConfig{
 			PublishTimeout: 100 * time.Millisecond,
 		},
-		metrics: noopMetrics{},
 	}
 
 	start := time.Now()
@@ -567,7 +566,6 @@ func TestProcessOne_ParentCtxCanceled_DoesNotBurnRetry(t *testing.T) {
 		workerCfg: &WorkerConfig{
 			PublishTimeout: 10 * time.Second, // long; we want parent cancel to fire first
 		},
-		metrics: noopMetrics{},
 	}
 
 	var initialRetry int

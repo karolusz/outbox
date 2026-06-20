@@ -9,29 +9,19 @@ import (
 
 // ConfigDecoder unmarshals a plugin's config block into a destination
 // struct. Plugin factories use this to populate their plugin-specific
-// Config type without knowing how the config arrives — YAML today (the
-// loader builds a closure over yaml.Node.Decode), potentially JSON, TOML,
-// or programmatic construction later. Plugins keep their `yaml:"name"`
-// struct tags; yaml.Node honours them during decode, and any future
-// format-aware decoder can do the same.
-//
-// Implementations may be called more than once with different destination
-// types; nothing about ConfigDecoder requires single-use semantics.
+// Config type without knowing how the config was loaded; today the YAML
+// loader provides a closure over yaml.Node.Decode.
 type ConfigDecoder func(v any) error
 
-// Factory builds a Publisher from a decoder over the plugin's config block.
-//
-// Plugin authors register a factory via Register so the YAML loader (and
-// adopters using the in-Go construction path) can instantiate the plugin's
-// Publisher without knowing the plugin's internals. The factory calls
-// decode(&cfg) once into a plugin-specific Config struct, validates it,
-// and returns a constructed Publisher (or an error).
+// Factory builds a Publisher from a decoder over the plugin's config
+// block. Plugin authors register their factory via Register; the
+// factory calls decode(&cfg) into a plugin-specific Config struct,
+// validates it, and returns a constructed Publisher.
 type Factory func(ctx context.Context, decode ConfigDecoder) (Publisher, error)
 
-// registry holds registered plugin factories. The lock and the map are
-// kept together as one type so callers cannot accidentally read or write
-// the map outside the lock. There is no unregister and no clear at the
-// type level; plugins live for process lifetime.
+// registry holds registered plugin factories. The lock and map live
+// together so callers cannot accidentally bypass the lock. No
+// unregister; plugins live for process lifetime.
 type registry struct {
 	mu      sync.RWMutex
 	plugins map[string]Factory
@@ -79,16 +69,10 @@ func (r *registry) lookup(name string) (Factory, bool) {
 // construction time.
 var globalRegistry = newRegistry()
 
-// Register associates a plugin name with its factory function. Typically
-// called from a plugin package's init(), with adopters blank-importing the
-// plugin package to trigger registration.
-//
-// Plugin names must be unique within a process. Registering the same name
-// twice panics — this is a startup-time error and a panic from init()
-// surfaces the bug at program boot rather than at first config load. Name
-// collisions are almost always configuration mistakes worth crashing on;
-// adopters who want to override a lib-shipped plugin should register under
-// a different name.
+// Register associates a plugin name with its factory. Typically called
+// from a plugin package's init(); adopters blank-import the package to
+// trigger registration. Duplicate names panic — a startup-time error
+// caught at program boot, not at first config load.
 func Register(name string, factory Factory) {
 	if name == "" {
 		panic("outbox: Register called with empty name")
@@ -99,16 +83,15 @@ func Register(name string, factory Factory) {
 	globalRegistry.register(name, factory)
 }
 
-// Names returns the names of all currently-registered plugins, sorted
-// alphabetically. Useful for diagnostics, "list available plugins" output,
-// and confirming a blank-import side-effect actually ran.
+// Names returns the names of all registered plugins, sorted
+// alphabetically. Useful for diagnostics and confirming a blank-import
+// side-effect ran.
 func Names() []string {
 	return globalRegistry.list()
 }
 
-// Lookup retrieves a factory by name from the global registry. The YAML
-// loader (and any future loader format) calls this to instantiate
-// publishers; adopters typically do not call it directly.
+// Lookup retrieves a factory by name. The YAML loader calls this to
+// instantiate publishers; adopters typically don't call it directly.
 func Lookup(name string) (Factory, bool) {
 	return globalRegistry.lookup(name)
 }

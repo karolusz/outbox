@@ -62,13 +62,10 @@ func NewFromConfig(ctx context.Context, cfg Config) (*Publisher, error) {
 }
 
 // Publish sends msg to the Pub/Sub topic named in target and blocks
-// until the broker acks (or returns an error). The full broker error is
-// returned to the relay verbatim — there is no error-classification
-// logic in v0.
-//
-// If the plugin was configured with PublishTimeout > 0, this method
-// wraps ctx with that deadline before calling the SDK. The relay's
-// worker-level deadline still applies; the shorter of the two wins.
+// until the broker acks. Broker errors propagate verbatim. If
+// PublishTimeout > 0, ctx is wrapped with that deadline before the SDK
+// call; the relay's worker-level deadline still applies and the shorter
+// wins.
 func (p *Publisher) Publish(ctx context.Context, target string, msg *outboxpub.Message) error {
 	if target == "" {
 		return fmt.Errorf("pubsub: empty target for message id=%d (address=%q)", msg.ID, msg.Address)
@@ -79,10 +76,8 @@ func (p *Publisher) Publish(ctx context.Context, target string, msg *outboxpub.M
 	defer cancel()
 
 	topic := p.client.Topic(target)
-	// Must be set on the client-side Topic handle before Publish.
-	// Server-side ordering must also be enabled on the topic itself
-	// (when it was created); without that, ordered Publish calls return
-	// an error from the broker.
+	// Must be set on the client-side handle before Publish AND on the
+	// topic at creation time; otherwise ordered Publish calls error.
 	topic.EnableMessageOrdering = p.enableMessageOrdering
 	result := topic.Publish(ctx, &pubsub.Message{
 		Data:        msg.Data,
@@ -100,13 +95,9 @@ func (p *Publisher) Close(ctx context.Context) error {
 	return p.client.Close()
 }
 
-// init registers the gcppubsub plugin with the outbox registry. Adopters
-// trigger this side effect by blank-importing the package:
+// init registers the plugin. Adopters trigger it by blank-importing:
 //
 //	import _ "github.com/karolusz/outbox/publisher/gcppubsub"
-//
-// After the import, the YAML loader (or any caller of outbox's plugin
-// registry) can instantiate gcppubsub publishers by name.
 func init() {
 	outboxpub.Register("gcppubsub", func(ctx context.Context, decode outboxpub.ConfigDecoder) (outboxpub.Publisher, error) {
 		var cfg Config

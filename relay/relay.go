@@ -16,29 +16,6 @@ import (
 	"github.com/karolusz/outbox"
 )
 
-// Metrics is the relay's optional observability hook. Adopters wire it to
-// whatever metrics stack they use (Prometheus, OpenTelemetry, expvar);
-// the lib stays metrics-agnostic. A noop default is used when no Metrics
-// is set via SetMetrics.
-//
-// New methods will be added to this interface as new metrics are wired
-// into the relay. While the lib is at v0.x, adopters implementing Metrics
-// should expect breaking additions; embed a noopMetrics into custom
-// implementations to receive default no-op behaviour for newly-added
-// methods.
-type Metrics interface {
-	// IncUnknownAddress is called when the worker resolves a row whose
-	// Address is not registered in the address book. The address string
-	// is passed so adopters can label / partition the metric.
-	IncUnknownAddress(address string)
-}
-
-// noopMetrics is the default Metrics implementation. Drops every event
-// on the floor. Adopters who don't care about metrics get this for free.
-type noopMetrics struct{}
-
-func (noopMetrics) IncUnknownAddress(address string) {}
-
 type WorkerConfig struct {
 	WorkerCount       int           // number of worker goroutines
 	QueueSize         int           // size of the job queue channel
@@ -46,30 +23,20 @@ type WorkerConfig struct {
 	TickPeriod        time.Duration // interval between DB reads
 	LeewayDurationSec int           // seconds inbetween delivery attempts
 
-	// PublishTimeout caps how long the worker waits for a single
-	// Publisher.Publish call. It is a safety net against hung publishers:
-	// when it expires, the publish fails with context.DeadlineExceeded,
-	// retry_count is incremented, and the row is re-attempted next tick.
-	//
-	// Zero or negative values are treated as "use the default" (30s).
-	// The worker-level timeout is NOT opt-in — if it were, a misconfigured
-	// adopter could disable the safety net by accident and hang workers
-	// indefinitely on a bad broker.
-	//
-	// Plugins MAY apply their own (tighter) timeout internally; the
-	// shorter deadline wins automatically because ctx chains compose
-	// that way.
+	// PublishTimeout caps each Publisher.Publish call. On expiry the
+	// publish fails with context.DeadlineExceeded, retry_count is
+	// incremented, and the row is re-attempted on the next tick. Plugins
+	// may apply their own tighter deadline; the shorter wins. Zero or
+	// negative values fall back to the default (30s); the timeout is not
+	// opt-in.
 	PublishTimeout time.Duration
 
-	// ShutdownTimeout caps how long the relay waits for AddressBook.Close
-	// to flush publisher buffers after workers have stopped. Used by
-	// Start to derive a fresh context.Background()+timeout for the
-	// Close call — the parent ctx is already canceled by this point,
-	// and propagating that cancellation would force broker SDKs to
-	// abandon in-flight work instead of flushing.
-	//
-	// Zero or negative values are treated as "use the default" (30s).
-	// Ignored when the relay was constructed with WithoutBookClose.
+	// ShutdownTimeout caps how long Start waits for AddressBook.Close to
+	// flush publisher buffers after workers have stopped. Derived from
+	// context.Background() (not the relay's parent ctx, which is already
+	// canceled by this point) so broker SDKs that honor ctx get a chance
+	// to flush. Zero or negative falls back to the default (30s).
+	// Ignored under WithoutBookClose.
 	ShutdownTimeout time.Duration
 }
 
@@ -79,14 +46,11 @@ type Relay struct {
 	dbSchema  string
 	logger    *zerolog.Logger
 	book      *outbox.AddressBook
-	metrics   Metrics
 	workerCfg *WorkerConfig
 
 	// closeBook controls whether Start calls o.book.Close after workers
-	// drain. Default true (the relay owns publisher lifetimes for the
-	// duration of Start); flipped to false by WithoutBookClose for
-	// adopters who want to reuse the book across Start cycles or share
-	// it with a producer-side validator.
+	// drain. Default true; flipped to false by WithoutBookClose for
+	// adopters who want to manage publisher lifetimes themselves.
 	closeBook bool
 }
 
@@ -96,36 +60,22 @@ type Option func(*Relay)
 
 // WithDBSchema overrides the Postgres schema the relay uses for its
 // tables. Default "outbox" (matching the migration's CREATE SCHEMA).
-// Useful for adopters with name conflicts or unusual setups; most should
-// leave it alone.
 func WithDBSchema(name string) Option {
 	return func(r *Relay) { r.dbSchema = name }
 }
 
-// WithoutBookClose tells the relay NOT to call AddressBook.Close after
-// Start returns. Use this when the adopter retains ownership of the
-// book — e.g. sharing it with a producer-side validator, reusing it
-// across multiple Start cycles, or doing custom flush coordination.
-//
-// Default behavior (without this option): the relay closes the book on
-// shutdown using a fresh context.Background()+ShutdownTimeout (default
-// 30s), absorbing the subtle ctx-handling that adopters writing their
-// own main would otherwise need to get right.
-//
-// Adopters who use WithoutBookClose are responsible for calling
-// book.Close themselves at the appropriate point in their lifecycle.
+// WithoutBookClose suppresses the relay's automatic AddressBook.Close
+// after Start returns. The adopter is then responsible for calling
+// book.Close at the appropriate point in their lifecycle. Use when
+// sharing the book with a producer-side validator or reusing it across
+// multiple Start cycles.
 func WithoutBookClose() Option {
 	return func(r *Relay) { r.closeBook = false }
 }
 
-// New constructs the relay with the given DB, logger, address book, and
-// worker config. Metrics default to a no-op implementation; override via
-// SetMetrics if you want them wired to your observability stack.
-//
-// The book must be non-nil and have at least one route registered.
-//
-// Optional arguments via Option (e.g. WithDBSchema) configure adopter-
-// specific overrides; default values are sensible.
+// New constructs the relay. The book must be non-nil and have at least
+// one route registered. Optional Options (e.g. WithDBSchema) override
+// defaults.
 func New(db *sqlx.DB, logger *zerolog.Logger, book *outbox.AddressBook, workerConfig *WorkerConfig, opts ...Option) Relay {
 	if workerConfig == nil {
 		workerConfig = &WorkerConfig{
@@ -138,10 +88,8 @@ func New(db *sqlx.DB, logger *zerolog.Logger, book *outbox.AddressBook, workerCo
 			ShutdownTimeout:   30 * time.Second,
 		}
 	}
-	// Normalize the safety-net timeouts. Both are non-opt-in (zero is
-	// rewritten to the default rather than honored as "disable"). We
-	// copy the struct so adopter-supplied configs aren't mutated under
-	// them.
+	// Normalize the safety-net timeouts. Copy so the adopter's struct
+	// is not mutated under them; zero or negative falls back to default.
 	cfg := *workerConfig
 	if cfg.PublishTimeout <= 0 {
 		cfg.PublishTimeout = 30 * time.Second
@@ -155,9 +103,8 @@ func New(db *sqlx.DB, logger *zerolog.Logger, book *outbox.AddressBook, workerCo
 		dbSchema:  "outbox",
 		logger:    logger,
 		book:      book,
-		metrics:   noopMetrics{},
 		workerCfg: workerConfig,
-		closeBook: true, // default: relay owns publisher lifetimes
+		closeBook: true,
 	}
 	for _, opt := range opts {
 		opt(&r)
@@ -165,23 +112,11 @@ func New(db *sqlx.DB, logger *zerolog.Logger, book *outbox.AddressBook, workerCo
 	return r
 }
 
-// SetMetrics installs a Metrics implementation for the relay. Call before
-// Start. Passing nil restores the default no-op metrics.
-func (o *Relay) SetMetrics(m Metrics) {
-	if m == nil {
-		o.metrics = noopMetrics{}
-		return
-	}
-	o.metrics = m
-}
-
-// Start runs the relay.
-// It returns a channel that will be closed when the relay has completely stopped.
-// It periodically polls the database for new outbox events and dispatches them
-// to a pool of worker goroutines via a job queue. processOne converts panics
-// inside it into errors so worker goroutines never die mid-loop; a panic that
-// escapes that scope (e.g. in the producer or relay setup) crashes the process
-// and defers recovery to whatever runs the binary (typically k8s).
+// Start runs the relay. Returns a channel closed when the relay has
+// fully stopped. The relay polls the outbox table on a ticker and
+// dispatches IDs to a worker pool. Panics inside the publish path are
+// converted to errors so worker goroutines never die mid-loop; panics
+// outside that scope crash the process.
 func (o *Relay) Start(ctx context.Context) <-chan struct{} {
 	completeChan := make(chan struct{})
 	go func() {
@@ -225,12 +160,9 @@ func (o *Relay) Start(ctx context.Context) <-chan struct{} {
 		o.logger.Debug().Msg("relay: all workers stopped")
 
 		// Flush publishers via AddressBook.Close unless the adopter
-		// opted out via WithoutBookClose. We derive a fresh ctx (NOT
-		// the relay's parent ctx, which is already canceled by this
-		// point) so broker SDKs that honor ctx don't immediately
-		// abandon in-flight work — they get up to ShutdownTimeout to
-		// flush. After ShutdownTimeout, the deadline fires and the
-		// SDKs propagate that downward to whatever they were doing.
+		// opted out. Derive a fresh ctx (the parent is already canceled
+		// by this point) so SDKs that honor ctx don't abandon in-flight
+		// work immediately.
 		if o.closeBook && o.book != nil {
 			closeCtx, closeCancel := context.WithTimeout(context.Background(), o.workerCfg.ShutdownTimeout)
 			defer closeCancel()
