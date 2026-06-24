@@ -7,19 +7,17 @@ import (
 	"time"
 )
 
-// Message is the row stored in the outbox table and the value handed to the
-// Publisher. The fields it carries are everything a publisher needs to
-// deliver the event to its destination, plus the bookkeeping the relay
-// uses to track delivery attempts.
+// Message is the row stored in the outbox table and handed to the
+// Publisher. It carries everything a publisher needs to deliver the
+// event, plus relay bookkeeping for delivery attempts.
 //
 // Address is the producer-visible logical name (e.g.
-// "payments.completed.v1"). The address book resolves it to a
+// "payments.completed.v1"); the address book resolves it to a
 // (publisher, target) pair at publish time.
 //
-// EventID is a producer-supplied UUID (UUIDv7 recommended) for end-to-end
-// dedup at the broker / consumer side. If a producer leaves it empty, the
-// outbox.Send helper fills it client-side; if the row is inserted via raw
-// SQL with NULL or DEFAULT, the DB applies the uuidv7() default.
+// EventID is a UUID (UUIDv7 recommended) for broker/consumer dedup. If
+// empty, outbox.Send fills it client-side; raw-SQL inserts get a
+// uuidv7() default at the DB.
 type Message struct {
 	// Relay-managed (do not populate at insert time).
 	ID              int64      `db:"id"`

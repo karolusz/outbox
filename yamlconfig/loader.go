@@ -1,12 +1,10 @@
 // Package yamlconfig loads outbox address books from YAML files. It
-// instantiates publishers via the plugin registry exposed by the
-// outbox/publisher package, builds routes, and validates the whole graph
-// through the address book's constructor.
+// instantiates publishers via the plugin registry, builds routes, and
+// validates the whole graph through the address book's constructor.
 //
-// Producers that only need to pre-validate addresses (and not publish)
-// should call LoadAddressBookValidateOnly — it parses the YAML but does
-// not touch the plugin registry, so producer binaries do not need any
-// broker SDKs in their dependency closure.
+// Producers that only need to pre-validate addresses (not publish)
+// should call LoadAddressBookValidateOnly — it does not touch the
+// plugin registry, so producer binaries don't pull in broker SDKs.
 package yamlconfig
 
 import (
@@ -49,21 +47,19 @@ type yamlAddress struct {
 
 const addressBookSchemaVersion = 1
 
-// LoadAddressBook reads a YAML address-book file, instantiates publishers
-// by looking up their plugin factories in the registry, builds routes,
-// validates the whole graph, and returns a ready-to-use AddressBook.
+// LoadAddressBook reads a YAML address-book file, instantiates
+// publishers by looking up their plugin factories in the registry,
+// builds routes, validates the whole graph, and returns a ready-to-use
+// AddressBook.
 //
-// Additional Go-side options (typically outbox.WithPublisher /
-// outbox.WithRoute) are applied alongside the YAML-derived options. They
-// must use keys disjoint from anything in the YAML — duplicates between
-// YAML and Go opts are reported as errors, same as duplicates within
-// YAML. Adopters who need to inject a publisher that YAML cannot describe
-// (e.g. Vault-fetched credentials) should give it a name that does not
-// appear in the YAML.
+// Additional Go-side options (e.g. outbox.WithPublisher to inject a
+// publisher that YAML can't describe, like Vault-fetched credentials)
+// are applied alongside YAML-derived options. They must use keys
+// disjoint from the YAML; duplicates across YAML and Go opts are
+// reported the same way as duplicates within YAML.
 //
-// Plugins must be registered before this is called — adopters typically
-// blank-import the plugin packages. If the YAML references a plugin not
-// in the registry, the error message recommends checking blank imports.
+// Plugins must be registered before this is called — adopters
+// typically blank-import the plugin packages.
 func LoadAddressBook(ctx context.Context, path string, opts ...outbox.AddressBookOption) (*outbox.AddressBook, error) {
 	cfg, err := readYAMLConfig(path)
 	if err != nil {
@@ -108,14 +104,13 @@ func LoadAddressBook(ctx context.Context, path string, opts ...outbox.AddressBoo
 }
 
 // LoadAddressBookValidateOnly parses a YAML address-book file for
-// validation purposes only — it does NOT instantiate publishers. The
-// returned AddressBook supports Has and Validate (for producer-side
-// address pre-checks) but Resolve will return a publisher that errors on
-// Publish.
+// validation only — it does NOT instantiate publishers. The returned
+// AddressBook supports Has and Validate for producer-side address
+// pre-checks; Resolve returns a stub publisher that errors on Publish.
 //
-// Useful in producer binaries that want to validate addresses at API
-// boundaries but do not need to publish themselves — they avoid pulling
-// in transitive dependencies from plugin packages (Pub/Sub SDK, etc.).
+// Useful in producer binaries that validate addresses at API
+// boundaries but don't publish themselves — they avoid pulling in
+// plugin transitive dependencies (broker SDKs, etc.).
 func LoadAddressBookValidateOnly(path string) (*outbox.AddressBook, error) {
 	cfg, err := readYAMLConfig(path)
 	if err != nil {

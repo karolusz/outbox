@@ -14,76 +14,45 @@ import "context"
 
 // Publisher is the contract every broker plugin satisfies.
 //
-// # Implementation requirements
+// # Publish
+//
+// target is the broker-specific destination name resolved by the
+// address book from msg.Address (e.g. a Pub/Sub topic, a Kafka topic,
+// an SQS queue ARN). Its semantics are publisher-defined; the relay
+// treats it as an opaque string.
 //
 // Implementations of Publish MUST:
 //
 //   - Be safe for concurrent calls. The relay shares a single Publisher
-//     instance across all worker goroutines; many in-flight calls may
-//     overlap.
+//     across all worker goroutines.
 //
-//   - Honor ctx cancellation. The relay derives a child ctx with a
-//     deadline (relay.WorkerConfig.PublishTimeout, default 30s) for
-//     every Publish call. Implementations MUST return promptly when
-//     ctx.Done() fires, returning ctx.Err() unwrapped or wrapped with
-//     additional broker context.
+//   - Honor ctx cancellation. The relay derives a child ctx with the
+//     configured PublishTimeout for every call. SDKs that accept ctx
+//     natively handle this for free; SDKs that don't need a select on
+//     ctx.Done() around the call. A plugin that ignores ctx blocks the
+//     worker and holds its DB tx open, defeating the safety net.
 //
-//     Broker SDKs that accept ctx natively (e.g. cloud.google.com/go/pubsub
-//     via result.Get(ctx), franz-go for Kafka, AWS SDK v2) handle this
-//     automatically. SDKs that don't (e.g. sarama, Eclipse Paho MQTT,
-//     amqp091-go) require an internal wrapper inside the plugin:
-//
-//     done := make(chan publishResult, 1)
-//     go func() { done <- doActualPublish(msg) }()
-//     select {
-//     case <-ctx.Done():
-//     return ctx.Err()  // best-effort; abandons the in-flight goroutine
-//     case r := <-done:
-//     return r.err
-//     }
-//
-//     A plugin that ignores ctx will block the relay's worker (and hold
-//     a DB transaction open) for as long as the broker takes, defeating
-//     the worker-level timeout entirely.
-//
-//   - Return broker errors verbatim on failure. The relay performs no
-//     error classification in v0; every error is treated as a publish
-//     failure that increments retry_count and re-attempts on the next
-//     poll cycle. (Exception: a returned ctx.Canceled where the relay's
-//     parent ctx is also Canceled is recognised as graceful shutdown
-//     and the row is NOT marked as a failure.)
-//
-// # target
-//
-// target is the broker-specific destination name resolved by the address
-// book from msg.Address (e.g. a Pub/Sub topic, a Kafka topic, an SQS
-// queue ARN). The semantics of target are publisher-defined; the relay
-// treats it as an opaque string.
+//   - Return broker errors verbatim. The relay does not classify
+//     errors; every error increments retry_count and re-attempts on the
+//     next poll cycle. (Exception: ctx.Canceled returned while the
+//     relay's parent ctx is also Canceled is treated as graceful
+//     shutdown, not a failure.)
 //
 // # Close
 //
-// Close releases any resources the publisher holds — broker connections,
-// background batching goroutines, network sockets. It is invoked by the
-// adopter via AddressBook.Close after the relay has stopped; the relay
-// itself does NOT close publishers (ownership stays with whoever
-// constructed the AddressBook, matching Go's database/sql pattern).
+// Close releases publisher-held resources (broker connections,
+// background goroutines, sockets). It is invoked by AddressBook.Close
+// after the relay has stopped. Implementations MUST:
 //
-// Implementations MUST:
+//   - Be idempotent. A second Close must not panic.
 //
-//   - Be idempotent. Adopters may call Close more than once (defensive
-//     defers, multiple AddressBook references to the same publisher).
-//     A second Close must not panic and should return nil or a clear
-//     "already closed" error.
+//   - Block until in-flight publishes have flushed (or the SDK has
+//     given up). Otherwise the adopter has no signal that exiting is
+//     safe.
 //
-//   - Block until in-flight publishes have flushed or the underlying
-//     SDK has given up. Returning before background goroutines finish
-//     means the adopter has no signal that it is safe to exit.
-//
-//   - Honor ctx as best-effort. If ctx.Done() fires before flush is
-//     complete, return ctx.Err() and abandon in-flight work. SDKs whose
-//     own Close does not accept a ctx (some Pub/Sub generations, MQTT
-//     libraries) may ignore the deadline; adopters who pass a tight
-//     ctx accept that those SDKs may flush past it.
+//   - Honor ctx as best-effort. On ctx.Done(), return ctx.Err() and
+//     abandon in-flight work. Some SDKs (Pub/Sub, MQTT) ignore the
+//     deadline on Close; adopters accept that those may flush past it.
 //
 // Plugins with no resources to release return nil immediately.
 type Publisher interface {

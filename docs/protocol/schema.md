@@ -91,9 +91,9 @@ Adding NOT NULL columns without defaults will break the relay's INSERT path (it 
 
 ## What's NOT in the schema
 
-These are deliberate v1 design choices, documented to avoid confusion:
+These are deliberate design choices, documented to avoid confusion:
 
-- **No `event_type` column.** Adopters who want event-type metadata in the broker put it in `headers` (where it flows through). v0 had a dedicated column but the relay never used it.
-- **No `state` enum / `published_at` column.** The relay deletes rows immediately on broker ack rather than marking them. This may change in a future version if audit visibility is a real adopter need; today it isn't.
+- **No `event_type` column.** Adopters who want event-type metadata in the broker put it in `headers`, where it flows through to the published message.
+- **No `state` enum / `published_at` column.** The relay deletes rows immediately on broker ack rather than marking them. May change later if audit visibility becomes a real adopter need.
 - **No UNIQUE constraint on `event_id`.** Producers MAY supply the same `event_id` twice (e.g. across application retries) and both rows are inserted. Consumer-side dedup against `event_id` is the responsibility of the downstream consumer, not the DB.
 - **No FK to producer domain tables.** The lib's schema doesn't know what tables exist in the adopter's domain.

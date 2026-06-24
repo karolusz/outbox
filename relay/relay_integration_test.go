@@ -4,7 +4,6 @@ package relay
 
 import (
 	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -14,27 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// countingMetrics records IncUnknownAddress calls. Used to assert the
-// relay correctly emits the unknown-address signal.
-type countingMetrics struct {
-	mu      sync.Mutex
-	unknown []string // addresses that came in, in order
-}
-
-func (m *countingMetrics) IncUnknownAddress(address string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.unknown = append(m.unknown, address)
-}
-
-func (m *countingMetrics) UnknownAddresses() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]string, len(m.unknown))
-	copy(out, m.unknown)
-	return out
-}
 
 // TestProcessOne_UnknownAddress_PreservesRetryCount is the load-bearing
 // invariant for the address-book integration: a row whose address is
@@ -56,13 +34,11 @@ func TestProcessOne_UnknownAddress_PreservesRetryCount(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	metrics := &countingMetrics{}
 	o := &Relay{
 		db:        db,
 		logger:    &testLogger,
 		workerCfg: &WorkerConfig{},
 		book:      book,
-		metrics:   metrics,
 	}
 
 	require.NoError(t, o.processOne(ctx, testLogger, 777))
@@ -77,9 +53,6 @@ func TestProcessOne_UnknownAddress_PreservesRetryCount(t *testing.T) {
 	var lastAttemptedAtIsSet bool
 	require.NoError(t, db.Get(&lastAttemptedAtIsSet, "SELECT last_attempted_at IS NOT NULL FROM outbox.messages WHERE id = 777"))
 	assert.True(t, lastAttemptedAtIsSet, "unknown-address handling must set last_attempted_at")
-
-	// The metric must have fired exactly once for this address.
-	assert.Equal(t, []string{"address.not.in.book.v1"}, metrics.UnknownAddresses())
 
 	// The row must still be in the table.
 	var count int
@@ -109,7 +82,6 @@ func TestProcessOne_UnknownAddress_RecoverableAfterBookUpdate(t *testing.T) {
 		logger:    &testLogger,
 		workerCfg: &WorkerConfig{},
 		book:      bookIncomplete,
-		metrics:   noopMetrics{},
 	}
 	require.NoError(t, o.processOne(ctx, testLogger, 777))
 
@@ -132,16 +104,6 @@ func TestProcessOne_UnknownAddress_RecoverableAfterBookUpdate(t *testing.T) {
 	var count int
 	require.NoError(t, db.Get(&count, "SELECT COUNT(*) FROM outbox.messages WHERE id = 777"))
 	assert.Equal(t, 0, count, "after book update, the row publishes and is deleted")
-}
-
-// TestSetMetrics_NilRestoresNoop covers the contract that SetMetrics(nil)
-// restores the noop default rather than panicking later.
-func TestSetMetrics_NilRestoresNoop(t *testing.T) {
-	o := &Relay{metrics: &countingMetrics{}}
-	o.SetMetrics(nil)
-	require.NotNil(t, o.metrics, "SetMetrics(nil) must install a non-nil noop metrics impl")
-	// Calling a method shouldn't panic.
-	o.metrics.IncUnknownAddress("anything")
 }
 
 // closeTrackingPublisher counts Close calls. Pointer-based so the

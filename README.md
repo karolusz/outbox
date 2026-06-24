@@ -188,7 +188,7 @@ Polyglot adopters parse the YAML themselves with their language's YAML library a
 - `Publisher` interface is `Publish(ctx, target, *Message) + Close(ctx)`. No permanent-error discrimination yet — every error is retried until `retry_limit`.
 - Polling-only. No `LISTEN/NOTIFY`, no CDC.
 - Single-replica relay assumed. No leader election yet.
-- Rows are deleted immediately on broker ack (no "published" state retention). May change in v0.4+ if audit visibility is a real adopter need.
+- Rows are deleted immediately on broker ack (no "published" state retention). May change later if audit visibility becomes a real adopter need.
 
 Expect breaking changes between v0.x releases. v1.0.0 lands when the schema and YAML format have been validated by adopters in production.
 

@@ -47,12 +47,9 @@ type addressBookConfig struct {
 // AddressBookOption configures a new AddressBook. Apply via NewAddressBook.
 type AddressBookOption func(*addressBookConfig)
 
-// WithPublisher registers a Publisher instance under a stable key. The key
-// is referenced by Route.Publisher (in WithRoute or in a loaded YAML) to
-// associate routes with publisher backends. Multiple routes can share a
-// single publisher instance — recommended when several addresses publish
-// to the same broker (e.g. several topics in one GCP project).
-//
+// WithPublisher registers a Publisher under a stable key referenced by
+// Route.Publisher. Multiple routes may share one Publisher instance
+// (recommended when several addresses publish to the same broker).
 // Duplicate keys are reported as an error by NewAddressBook.
 func WithPublisher(key string, p publisher.Publisher) AddressBookOption {
 	return func(c *addressBookConfig) {
@@ -64,11 +61,10 @@ func WithPublisher(key string, p publisher.Publisher) AddressBookOption {
 	}
 }
 
-// WithRoute registers a logical address and the (publisher, target) pair
-// it resolves to. The route's Publisher field must match a key registered
-// via WithPublisher; otherwise NewAddressBook returns an error.
-//
-// Duplicate addresses are reported as an error by NewAddressBook.
+// WithRoute registers a logical address and the (publisher, target)
+// pair it resolves to. The route's Publisher must match a key
+// registered via WithPublisher; otherwise NewAddressBook errors.
+// Duplicate addresses are also reported as errors.
 func WithRoute(address string, route Route) AddressBookOption {
 	return func(c *addressBookConfig) {
 		if _, seen := c.routes[address]; !seen {
@@ -211,10 +207,8 @@ func (b *AddressBook) Has(address string) bool {
 }
 
 // Validate returns nil if address is registered, otherwise an error
-// wrapping ErrUnknownAddress. Useful at producer API boundaries to reject
-// unknown addresses early — for example, a REST handler can call this
-// before inserting an outbox row, returning a 400 to the caller instead
-// of letting the row reach the relay and stall there.
+// wrapping ErrUnknownAddress. Useful at producer API boundaries to
+// reject unknown addresses before they reach the relay.
 func (b *AddressBook) Validate(address string) error {
 	if !b.Has(address) {
 		return fmt.Errorf("%w: %q", ErrUnknownAddress, address)
@@ -222,30 +216,18 @@ func (b *AddressBook) Validate(address string) error {
 	return nil
 }
 
-// Close releases every Publisher in the book by calling its Close method.
+// Close releases every Publisher in the book by calling its Close.
 //
-// Close should be called once by the adopter after the relay has stopped
-// (typically `defer book.Close(ctx)` immediately after the book is
-// constructed). It is the adopter's responsibility — the relay does NOT
-// close the book on Start's return, because adopters may want to share
-// the book across multiple Start cycles or with a producer-side validator.
+// By default the relay calls this for the adopter after Start returns;
+// adopters using WithoutBookClose are responsible for calling it
+// themselves. It is safe to call more than once (Publisher.Close is
+// required to be idempotent), but not safe to call concurrently with
+// running workers — wait for Start's done channel first.
 //
-// Errors from individual publisher Close calls are joined via
-// errors.Join and returned together; the publisher key (or "passthrough")
-// is included in each wrapped error so adopters can correlate failures
-// back to their YAML config. Close attempts to close every publisher
-// even if earlier ones errored.
-//
-// Adopters who care about flush time during shutdown should pass a
-// context.Background() derivative with a deadline (e.g. 30s) rather
-// than the relay's parent ctx — the parent ctx is already canceled by
-// the time Start returns, and broker SDKs that honor ctx would abandon
-// in-flight work immediately.
-//
-// Calling Close more than once is safe (each Publisher.Close should be
-// idempotent — see the Publisher interface contract). However Close is
-// not safe to call concurrently with the relay's workers; await
-// `<-r.Start(ctx)` first.
+// Errors from individual Close calls are joined via errors.Join and
+// wrapped with the publisher key so adopters can correlate failures
+// back to YAML config. Close attempts every publisher even if earlier
+// ones errored.
 func (b *AddressBook) Close(ctx context.Context) error {
 	var errs []error
 	for name, pub := range b.publishers {
